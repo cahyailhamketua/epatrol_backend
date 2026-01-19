@@ -18,9 +18,23 @@ class User extends Authenticatable
      * @var list<string>
      */
     protected $fillable = [
-        'name',
+        'organization_id',
+        'project_id',
+        'full_name',
+        'username',
         'email',
+        'phone',
+        'role',
         'password',
+        'avatar',
+        'nik',
+        'npwp',
+        'bpjs_kesehatan',
+        'bpjs_ketenagakerjaan',
+        'bank_name',
+        'bank_account',
+        'join_date',
+        'active',
     ];
 
     /**
@@ -45,4 +59,26 @@ class User extends Authenticatable
             'password' => 'hashed',
         ];
     }
+
+        /* ================= RELATIONS ================= */
+
+        public function organization()
+        {
+            return $this->belongsTo(Organization::class);
+        }
+    
+        public function project()
+        {
+            return $this->belongsTo(Project::class);
+        }
+    
+        public function schedules()
+        {
+            return $this->hasMany(Schedule::class);
+        }
+    
+        public function attendances()
+        {
+            return $this->hasMany(Attendance::class);
+        }
 }
