@@ -16,9 +16,42 @@ class UserController extends Controller
     /**
      * Display a listing of the resource.
      */
-    public function index()
+    public function index(Request $request)
     {
-        //
+        $auth = $request->user();
+
+        $this->authorize('viewAny', User::class);
+    
+        $users = User::query()
+            ->select(
+                'id',
+                'full_name',
+                'username',
+                'email',
+                'role',
+                'project_id',
+                'organization_id',
+                'active'
+            )
+            ->when($auth->role === 'admin_project', function ($q) use ($auth) {
+                // 🔐 admin project hanya lihat user di project-nya
+                $q->where('project_id', $auth->project_id);
+            })
+            ->when(in_array($auth->role, ['anggota', 'komandan_regu']), function ($q) {
+                // ❌ role ini tidak boleh list user
+                $q->whereRaw('1 = 0');
+            })
+            ->when($request->filled('search'), fn ($q) =>
+                $q->where('full_name', 'like', '%' . $request->search . '%')
+            )
+            ->when($request->has('active'), fn ($q) =>
+                $q->where('active', $request->boolean('active'))
+            )
+            ->where('active', true) // 🔥 FILTER UTAMA
+            ->orderBy('full_name')
+            ->paginate($request->get('per_page', 15));
+    
+        return response()->json($users);
     }
 
     /**
@@ -60,9 +93,13 @@ class UserController extends Controller
     /**
      * Display the specified resource.
      */
-    public function show(string $id)
+    public function show(User $user)
     {
-        //
+        $this->authorize('view', $user);
+
+        return response()->json([
+            'data' => $user,
+        ]);
     }
 
 

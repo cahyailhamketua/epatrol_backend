@@ -36,6 +36,27 @@ class UserPolicy
         return false;
     }
 
+    public function viewAny(User $auth): bool
+    {
+        return in_array($auth->role, [
+            'dev',
+            'ho',
+            'admin_project',
+            'komandan_regu',
+        ]);
+    }
+
+    public function view(User $auth, user $target): bool
+    {
+        //return true;
+        return in_array($auth->role, [
+            'dev',
+            'ho',
+            'admin_project',
+            'komandan_regu',
+        ]);
+    }
+
     /**
      * NONAKTIFKAN USER (BUKAN DELETE)
      */

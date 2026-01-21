@@ -10,6 +10,10 @@ use App\Http\Controllers\Api\ProjectController;
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
 Route::middleware('auth:sanctum')->group(function () {
+    // Index user
+    Route::get('/users', [UserController::class, 'index']);
+    // show user
+    Route::get('/users/{user}', [UserController::class, 'show']);
     // Update user
     Route::put('/users/{user}', [UserController::class, 'update']);
     // Nonaktifkan user
@@ -46,4 +50,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::patch('/projects/{project}/deactivate', [ProjectController::class, 'deactivate']);
     Route::patch('/projects/{project}/activate', [ProjectController::class, 'activate']);
+    // user perproject
+    Route::get('/projects/{project}/users', [ProjectController::class, 'users']);
 });

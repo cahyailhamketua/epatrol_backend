@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\User;
 use App\Models\Project;
+use App\Models\Organization;
 
 class ProjectPolicy
 {
@@ -12,9 +13,24 @@ class ProjectPolicy
         return true;
     }
 
-    public function view(User $user, Project $project): bool
+    public function view(User $user, Project $project,): bool
     {
-        return true;
+        // DEV bisa lihat semua
+        if ($user->role === 'dev') {
+            return true;
+        }
+
+        // HO → hanya project dalam organization miliknya
+        if ($user->role === 'ho') {
+            return $user->organization_id === $project->organization_id;
+        }
+            
+        // Admin project hanya project miliknya
+        if ($user->role === 'admin_project') {
+            return $user->project_id === $project->id;
+        }
+    
+        return false;
     }
 
     public function create(User $user): bool

@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
+use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -17,7 +18,7 @@ class ProjectController extends Controller
         $this->authorize('viewAny', Project::class);
 
         $projects = Project::query()
-            ->select('id', 'organization_id', 'name', 'code', 'active', 'created_at')
+            ->select('id', 'organization_id', 'name', 'code', 'active')
             ->when($request->filled('organization_id'), fn ($q) =>
                 $q->where('organization_id', $request->organization_id)
             )
@@ -125,5 +126,30 @@ class ProjectController extends Controller
         return response()->json([
             'message' => 'Project activated',
         ]);
+    }
+
+     /**
+     * USER PERPROJECT
+     */
+    public function users(Project $project, Request $request)
+    {
+        $this->authorize('view', $project);
+
+        $users = $project->users()
+            ->select(
+                'id',
+                'full_name',
+                'username',
+                'email',
+                'role',
+                'project_id',
+                'organization_id',
+                'active'
+            )
+            ->where('active', true) // 🔥 HANYA USER AKTIF
+            ->orderBy('full_name')
+            ->paginate($request->get('per_page', 15));
+
+        return response()->json($users);
     }
 }
