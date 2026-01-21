@@ -4,6 +4,7 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\OrganizationController;
 
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
@@ -22,4 +23,15 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/change-password', [AuthController::class, 'changePassword']);
     // check token
     Route::get('/me', [AuthController::class, 'me']);
+});
+
+// organization routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/organizations', [OrganizationController::class, 'index']);
+    Route::post('/organizations', [OrganizationController::class, 'store']);
+    Route::get('/organizations/{organization}', [OrganizationController::class, 'show']);
+    Route::put('/organizations/{organization}', [OrganizationController::class, 'update']);
+
+    Route::patch('/organizations/{organization}/deactivate', [OrganizationController::class, 'deactivate']);
+    Route::patch('/organizations/{organization}/activate', [OrganizationController::class, 'activate']);
 });
