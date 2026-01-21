@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\OrganizationController;
+use App\Http\Controllers\Api\ProjectController;
 
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
@@ -34,4 +35,15 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::patch('/organizations/{organization}/deactivate', [OrganizationController::class, 'deactivate']);
     Route::patch('/organizations/{organization}/activate', [OrganizationController::class, 'activate']);
+});
+
+// project routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/projects', [ProjectController::class, 'index']);
+    Route::post('/projects', [ProjectController::class, 'store']);
+    Route::get('/projects/{project}', [ProjectController::class, 'show']);
+    Route::put('/projects/{project}', [ProjectController::class, 'update']);
+
+    Route::patch('/projects/{project}/deactivate', [ProjectController::class, 'deactivate']);
+    Route::patch('/projects/{project}/activate', [ProjectController::class, 'activate']);
 });
