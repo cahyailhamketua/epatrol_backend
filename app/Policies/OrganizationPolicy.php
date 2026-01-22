@@ -38,4 +38,19 @@ class OrganizationPolicy
     {
         return $user->role === 'dev' && !$org->active;
     }
+
+    public function viewProjects(User $user, Organization $organization): bool
+    {
+        // DEV bebas
+        if ($user->role === 'dev') {
+            return true;
+        }
+
+        // HO hanya organization tempat dia bekerja
+        if ($user->role === 'ho') {
+            return $user->organization_id === $organization->id;
+        }
+
+        return false;
+    }
 }

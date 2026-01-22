@@ -39,6 +39,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::patch('/organizations/{organization}/deactivate', [OrganizationController::class, 'deactivate']);
     Route::patch('/organizations/{organization}/activate', [OrganizationController::class, 'activate']);
+    //project by organization
+    Route::get('/organizations/{organization}/projects', [ProjectController::class, 'projectsByOrganization']
+    );
 });
 
 // project routes
@@ -50,6 +53,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::patch('/projects/{project}/deactivate', [ProjectController::class, 'deactivate']);
     Route::patch('/projects/{project}/activate', [ProjectController::class, 'activate']);
-    // user perproject
+    // user by project
     Route::get('/projects/{project}/users', [ProjectController::class, 'users']);
 });

@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Models\User;
+use App\Models\Organization;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
@@ -17,8 +18,21 @@ class ProjectController extends Controller
     {
         $this->authorize('viewAny', Project::class);
 
+        $user = $request->user();
+
         $projects = Project::query()
             ->select('id', 'organization_id', 'name', 'code', 'active')
+
+            // 🔒 ROLE BASED SCOPING
+            ->when($user->role === 'ho', function ($q) use ($user) {
+                $q->where('organization_id', $user->organization_id);
+            })
+
+            ->when($user->role === 'admin_project', function ($q) use ($user) {
+                $q->where('id', $user->project_id);
+            })
+
+            // 🔍 FILTER OPSIONAL
             ->when($request->filled('organization_id'), fn ($q) =>
                 $q->where('organization_id', $request->organization_id)
             )
@@ -28,11 +42,13 @@ class ProjectController extends Controller
             ->when($request->filled('search'), fn ($q) =>
                 $q->where('name', 'like', '%' . $request->search . '%')
             )
+
             ->orderBy('name')
             ->paginate($request->get('per_page', 15));
 
         return response()->json($projects);
     }
+
 
     /**
      * DETAIL PROJECT
@@ -129,7 +145,7 @@ class ProjectController extends Controller
     }
 
      /**
-     * USER PERPROJECT
+     * USER BY PROJECT
      */
     public function users(Project $project, Request $request)
     {
@@ -151,5 +167,26 @@ class ProjectController extends Controller
             ->paginate($request->get('per_page', 15));
 
         return response()->json($users);
+    }
+
+    /**
+     * Project by Organization
+     */
+    public function projectsByOrganization(Organization $organization, Request $request)
+    {
+        $this->authorize('viewProjects', $organization);
+
+        $projects = $organization->projects()
+            ->select('id', 'organization_id', 'name', 'code', 'active')
+            ->when($request->has('active'), fn ($q) =>
+                $q->where('active', $request->boolean('active'))
+            )
+            ->when($request->filled('search'), fn ($q) =>
+                $q->where('name', 'like', '%' . $request->search . '%')
+            )
+            ->orderBy('name')
+            ->paginate($request->get('per_page', 15));
+
+        return response()->json($projects);
     }
 }
