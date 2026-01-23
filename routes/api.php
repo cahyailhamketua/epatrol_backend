@@ -7,6 +7,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ShiftController;
+use App\Http\Controllers\Api\PostController;
 
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
@@ -67,5 +68,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/shifts/{shift}', [ShiftController::class, 'show']);
     Route::put('/shifts/{shift}', [ShiftController::class, 'update']);
     Route::delete('/shifts/{shift}', [ShiftController::class, 'destroy']);
+});
+
+// post-patrol routes
+Route::middleware('auth:sanctum')->group(function () {
+
+    Route::get('/projects/{project}/posts', [PostController::class, 'index']);
+    Route::post('/projects/{project}/posts', [PostController::class, 'store']);
+
+    Route::get('/posts/{post}', [PostController::class, 'show']);
+    Route::put('/posts/{post}', [PostController::class, 'update']);
+    Route::delete('/posts/{post}', [PostController::class, 'destroy']);
 
 });

@@ -22,7 +22,8 @@ class Post extends Model
 
     public function patrolPoints()
     {
-        return $this->hasMany(PatrolPoint::class);
+        return $this->hasMany(PatrolPoint::class)
+            ->orderBy('sequence_order');
     }
 
     public function activities()
