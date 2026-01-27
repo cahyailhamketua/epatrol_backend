@@ -9,14 +9,47 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
 class PostController extends Controller
-{
+{   
+    public function index(Request $request)
+    {
+        $this->authorize('viewAny', Post::class);
+
+        $user = $request->user();
+
+        $query = Post::with('patrolPoints')
+            ->select('id', 'project_id', 'name', 'type')
+            ->orderBy('name');
+
+        // 🔒 Role terbatas → hanya project dia
+        if (in_array($user->role, ['anggota', 'komandan_regu', 'admin_project'])) {
+            $query->where('project_id', $user->project_id);
+        }
+
+        /**
+         * OPTIONAL FILTER BY TYPE
+         */
+        if ($request->filled('type')) {
+            $request->validate([
+                'type' => 'in:static,mobile'
+            ]);
+
+            $query->where('type', $request->type);
+        }
+
+        $posts = $query
+            ->orderBy('name')
+            ->paginate($request->get('per_page', 15));
+
+        return response()->json($posts);
+    }
+
     /**
      * LIST POST PER PROJECT
      * GET /projects/{project}/posts
      */
-    public function index(Project $project)
+    public function indexByProject(Project $project)
     {
-        $this->authorize('viewAny', [Post::class, $project]);
+        $this->authorize('viewAnyByProject', [Post::class, $project]);
 
         $posts = $project->posts()
             ->with('patrolPoints')

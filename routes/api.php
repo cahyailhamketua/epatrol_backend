@@ -73,9 +73,10 @@ Route::middleware('auth:sanctum')->group(function () {
 // post-patrol routes
 Route::middleware('auth:sanctum')->group(function () {
 
-    Route::get('/projects/{project}/posts', [PostController::class, 'index']);
+    Route::get('/projects/{project}/posts', [PostController::class, 'indexByProject']);
     Route::post('/projects/{project}/posts', [PostController::class, 'store']);
 
+    Route::get('/posts', [PostController::class, 'index']);
     Route::get('/posts/{post}', [PostController::class, 'show']);
     Route::put('/posts/{post}', [PostController::class, 'update']);
     Route::delete('/posts/{post}', [PostController::class, 'destroy']);

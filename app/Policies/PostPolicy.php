@@ -8,7 +8,17 @@ use App\Models\Project;
 
 class PostPolicy
 {
-    public function viewAny(User $user, Project $project): bool
+    public function viewAny(User $user): bool
+    {
+        return in_array($user->role, [
+            'ho',
+            'komandan_regu',
+            'admin_project',
+            'anggota',
+        ]);
+    }
+
+    public function viewAnyByProject(User $user, Project $project): bool
     {
         if ($user->role === 'dev') return true;
 
@@ -16,7 +26,7 @@ class PostPolicy
             return $user->organization_id === $project->organization_id;
         }
 
-        if ($user->role === 'admin_project') {
+        if (in_array($user->role, ['admin_project', 'komandan_regu', 'anggota'])) {
             return $user->project_id === $project->id;
         }
 
