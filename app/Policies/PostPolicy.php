@@ -11,6 +11,7 @@ class PostPolicy
     public function viewAny(User $user): bool
     {
         return in_array($user->role, [
+            'dev',
             'ho',
             'komandan_regu',
             'admin_project',

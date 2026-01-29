@@ -25,6 +25,14 @@ class PostController extends Controller
             $query->where('project_id', $user->project_id);
         }
 
+        // 🔒 HO → semua project dalam organization dia
+
+        if ($user->role === 'ho') {
+            $query->whereHas('project', function ($q) use ($user) {
+                $q->where('organization_id', $user->organization_id);
+            });
+        }
+
         /**
          * OPTIONAL FILTER BY TYPE
          */
