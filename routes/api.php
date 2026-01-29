@@ -8,6 +8,7 @@ use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ShiftController;
 use App\Http\Controllers\Api\PostController;
+use App\Http\Controllers\Api\PatrolPointController;
 
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
@@ -72,7 +73,6 @@ Route::middleware('auth:sanctum')->group(function () {
 
 // post-patrol routes
 Route::middleware('auth:sanctum')->group(function () {
-
     Route::get('/projects/{project}/posts', [PostController::class, 'indexByProject']);
     Route::post('/projects/{project}/posts', [PostController::class, 'store']);
 
@@ -81,4 +81,11 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::put('/posts/{post}', [PostController::class, 'update']);
     Route::delete('/posts/{post}', [PostController::class, 'destroy']);
 
+});
+
+// patrol point routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('/posts/{post}/patrol-points', [PatrolPointController::class, 'store']);
+    Route::put('/patrol-points/{patrolPoint}', [PatrolPointController::class, 'update']);
+    Route::delete('/patrol-points/{patrolPoint}',[PatrolPointController::class, 'destroy']);
 });
