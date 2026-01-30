@@ -90,7 +90,8 @@ class PostController extends Controller
             'patrol_points.*.radius' => 'nullable|integer|min:1',
         ]);
 
-        DB::transaction(function () use ($validated, $project, &$post) {
+        $post = DB::transaction(function () use ($validated, $project) {
+
             $post = $project->posts()->create([
                 'name' => $validated['name'],
                 'type' => $validated['type'],
@@ -98,14 +99,20 @@ class PostController extends Controller
 
             foreach ($validated['patrol_points'] as $point) {
                 $post->patrolPoints()->create($point);
+                // QR Code otomatis dibuat via model event
             }
+
+            return $post;
         });
 
         return response()->json([
             'message' => 'Post created successfully',
-            'data' => $post->load('patrolPoints'),
+            'data' => $post->load([
+                'patrolPoints.qrCode'
+            ]),
         ], 201);
     }
+
 
     /**
      * DETAIL POST
