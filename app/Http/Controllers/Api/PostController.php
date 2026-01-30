@@ -162,4 +162,23 @@ class PostController extends Controller
             'message' => 'Post deleted successfully',
         ]);
     }
+
+    /**
+     * GET POST TYPES
+     * GET /posts/types
+     */
+    public function types()
+    {
+        $this->authorize('viewAny', Post::class);
+
+        $types = DB::table('posts')
+            ->select('type')
+            ->distinct()
+            ->orderBy('type')
+            ->pluck('type');
+
+        return response()->json([
+            'data' => $types
+        ]);
+    }
 }
