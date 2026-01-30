@@ -181,4 +181,37 @@ class PostController extends Controller
             'data' => $types
         ]);
     }
+
+    /**
+     * GET POSTS BY TYPE
+     * GET /posts/by-type/{type}
+     */
+    public function byType(Request $request, string $type)
+    {
+        $this->authorize('viewAny', Post::class);
+
+        $user = $request->user();
+
+        $query = Post::with('patrolPoints')
+            ->select('id', 'project_id', 'name', 'type')
+            ->where('type', $type)
+            ->orderBy('name');
+
+        // 🔒 Role terbatas → hanya project dia
+        if (in_array($user->role, ['anggota', 'komandan_regu', 'admin_project'])) {
+            $query->where('project_id', $user->project_id);
+        }
+
+        // 🔒 HO → semua project dalam organization dia
+        if ($user->role === 'ho') {
+            $query->whereHas('project', function ($q) use ($user) {
+                $q->where('organization_id', $user->organization_id);
+            });
+        }
+
+        $posts = $query->paginate($request->get('per_page', 15));
+
+        return response()->json($posts);
+    }
+
 }

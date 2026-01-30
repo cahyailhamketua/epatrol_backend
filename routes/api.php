@@ -76,8 +76,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/projects/{project}/posts', [PostController::class, 'indexByProject']);
     Route::post('/projects/{project}/posts', [PostController::class, 'store']);
 
-    
     Route::get('/posts/types', [PostController::class, 'types']);
+    Route::get('/posts/by-type/{type}', [PostController::class, 'byType']);
     Route::get('/posts', [PostController::class, 'index']);
     Route::get('/posts/{post}', [PostController::class, 'show']);
     Route::put('/posts/{post}', [PostController::class, 'update']);
