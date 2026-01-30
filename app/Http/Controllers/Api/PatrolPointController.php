@@ -6,6 +6,9 @@ use App\Http\Controllers\Controller;
 use App\Models\Post;
 use App\Models\PatrolPoint;
 use Illuminate\Http\Request;
+use App\Models\QrCode;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 class PatrolPointController extends Controller
 {
@@ -25,11 +28,19 @@ class PatrolPointController extends Controller
             'radius' => 'nullable|integer|min:1',
         ]);
 
-        $point = $post->patrolPoints()->create($validated);
+        DB::transaction(function () use ($post, $validated, &$point) {
+
+            $point = $post->patrolPoints()->create($validated);
+
+            $point->qrCode()->create([
+                'code' => strtoupper(Str::uuid()),
+                'active' => true,
+            ]);
+        });
 
         return response()->json([
-            'message' => 'Patrol point created',
-            'data' => $point,
+            'message' => 'Patrol point created with QR code',
+            'data' => $point->load('qrCode'),
         ], 201);
     }
 
@@ -50,15 +61,34 @@ class PatrolPointController extends Controller
             'latitude' => 'sometimes|numeric',
             'longitude' => 'sometimes|numeric',
             'radius' => 'nullable|integer|min:1',
+            'regenerate_qr' => 'sometimes|boolean',
         ]);
 
-        $patrolPoint->update($validated);
+        DB::transaction(function () use ($patrolPoint, $validated) {
+
+            $patrolPoint->update($validated);
+
+            if (!empty($validated['regenerate_qr']) && $validated['regenerate_qr']) {
+
+                // Nonaktifkan QR lama
+                if ($patrolPoint->qrCode) {
+                    $patrolPoint->qrCode->update(['active' => false]);
+                }
+
+                // Buat QR baru
+                $patrolPoint->qrCode()->create([
+                    'code' => strtoupper(Str::uuid()),
+                    'active' => true,
+                ]);
+            }
+        });
 
         return response()->json([
             'message' => 'Patrol point updated',
-            'data' => $patrolPoint,
+            'data' => $patrolPoint->load('qrCode'),
         ]);
     }
+
 
     /**
      * DELETE PATROL POINT
@@ -71,7 +101,10 @@ class PatrolPointController extends Controller
             [PatrolPoint::class, $patrolPoint->post->project]
         );
 
-        $patrolPoint->delete();
+        DB::transaction(function () use ($patrolPoint) {
+            $patrolPoint->qrCode()?->delete();
+            $patrolPoint->delete();
+        });
 
         return response()->json([
             'message' => 'Patrol point deleted',
