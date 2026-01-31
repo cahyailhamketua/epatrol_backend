@@ -16,8 +16,7 @@ return new class extends Migration
             $table->foreignId('post_id')->constrained()->cascadeOnDelete();
         
             $table->string('name');          // nama aktivitas
-            $table->time('start_time');      // jam mulai
-            $table->time('end_time');        // jam selesai
+            $table->string('location');
         
             $table->boolean('active')->default(true);
         
