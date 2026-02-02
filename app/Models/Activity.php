@@ -12,13 +12,16 @@ class Activity extends Model
     protected $fillable = [
         'post_id',
         'name',
-        'start_time',
-        'end_time',
+        'location',
         'active',
     ];
 
     public function post()
     {
         return $this->belongsTo(Post::class);
+    }
+    public function shiftTimes()
+    {
+        return $this->hasMany(ActivityShiftTime::class);
     }
 }
