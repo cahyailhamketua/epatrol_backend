@@ -47,7 +47,9 @@ class UserController extends Controller
             ->when($request->has('active'), fn ($q) =>
                 $q->where('active', $request->boolean('active'))
             )
-            ->where('active', true) // 🔥 FILTER UTAMA
+            ->when($auth->role !== 'dev', function ($q) {
+                $q->where('active', true);
+            })
             ->orderBy('full_name')
             ->paginate($request->get('per_page', 15));
     
