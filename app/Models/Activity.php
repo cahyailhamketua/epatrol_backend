@@ -20,8 +20,9 @@ class Activity extends Model
     {
         return $this->belongsTo(Post::class);
     }
-    public function shiftTimes()
+    
+    public function assignmentTimes()
     {
-        return $this->hasMany(ActivityShiftTime::class);
+        return $this->hasMany(ActivityAssignmentTime::class);
     }
 }

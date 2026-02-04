@@ -13,13 +13,13 @@ class DatabaseSeeder extends Seeder
         ProjectSeeder::class,
         UserSeeder::class,
 
-        ShiftSeeder::class,
+        AssignmentSeeder::class,
         PostSeeder::class,
         PatrolPointSeeder::class,
         QrCodeSeeder::class,
 
         ActivitySeeder::class,
-        ActivityShiftTimeSeeder::class,
+        ActivityAssignmentTimeSeeder::class,
     ]);
 }
 

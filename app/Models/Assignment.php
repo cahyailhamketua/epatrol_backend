@@ -3,6 +3,7 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class Assignment extends Model
 {
@@ -30,5 +31,10 @@ class Assignment extends Model
     public function attendances()
     {
         return $this->hasMany(Attendance::class);
+    }
+
+    public function activityTimes()
+    {
+        return $this->hasMany(ActivityAssignmentTime::class);
     }
 }

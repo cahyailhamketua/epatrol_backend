@@ -4,7 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 
-class ActivityShiftTime extends Model
+class ActivityAssignmentTime extends Model
 {
     protected $fillable = [
         'activity_id',

@@ -7,9 +7,12 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ShiftController;
+use App\Http\Controllers\Api\AssignmentController;
 use App\Http\Controllers\Api\PostController;
-use App\Http\Controllers\Api\PatrolPointController;
 use App\Http\Controllers\Api\ActivityController;
+use App\Http\Controllers\Api\ActivityAssignmentTimeController;
+use App\Http\Controllers\Api\PatrolPointController;
+use App\Http\Controllers\Api\ScheduleController;
 
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
@@ -63,13 +66,23 @@ Route::middleware('auth:sanctum')->group(function () {
 });
 
 // shift routes
-Route::middleware('auth:sanctum')->group(function () {
-    Route::get('/projects/{project}/shifts', [ShiftController::class, 'index']);
-    Route::post('/projects/{project}/shifts', [ShiftController::class, 'store']);
+// Route::middleware('auth:sanctum')->group(function () {
+//     Route::get('/projects/{project}/shifts', [ShiftController::class, 'index']);
+//     Route::post('/projects/{project}/shifts', [ShiftController::class, 'store']);
 
-    Route::get('/shifts/{shift}', [ShiftController::class, 'show']);
-    Route::put('/shifts/{shift}', [ShiftController::class, 'update']);
-    Route::delete('/shifts/{shift}', [ShiftController::class, 'destroy']);
+//     Route::get('/shifts/{shift}', [ShiftController::class, 'show']);
+//     Route::put('/shifts/{shift}', [ShiftController::class, 'update']);
+//     Route::delete('/shifts/{shift}', [ShiftController::class, 'destroy']);
+// });
+
+// assignment routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/projects/{project}/assignments', [AssignmentController::class, 'index']);
+    Route::post('/projects/{project}/assignments', [AssignmentController::class, 'store']);
+
+    Route::get('/assignments/{assignment}', [AssignmentController::class, 'show']);
+    Route::put('/assignments/{assignment}', [AssignmentController::class, 'update']);
+    Route::delete('/assignments/{assignment}', [AssignmentController::class, 'destroy']);
 });
 
 // post-patrol routes
@@ -95,9 +108,65 @@ Route::middleware('auth:sanctum')->group(function () {
 
 // activity routes
 Route::middleware('auth:sanctum')->group(function () {
-    Route::get('/posts/{post}/activities', [ActivityController::class, 'index']);
+    // Get all activities (with filters)
+    Route::get('/activities', [ActivityController::class, 'index']);
+    
+    // Get activities by post
+    Route::get('/posts/{post}/activities', [ActivityController::class, 'indexByPost']);
     Route::post('/posts/{post}/activities', [ActivityController::class, 'store']);
-
+    
+    // Individual activity operations
+    Route::get('/activities/{activity}', [ActivityController::class, 'show']);
     Route::put('/activities/{activity}', [ActivityController::class, 'update']);
     Route::delete('/activities/{activity}', [ActivityController::class, 'destroy']);
+    Route::patch('/activities/{activity}/activate', [ActivityController::class, 'activate']);
+    Route::patch('/activities/{activity}/deactivate', [ActivityController::class, 'deactivate']);
+    
+    // Bulk delete
+    Route::post('/activities/delete-bulk', [ActivityController::class, 'destroyBulk']);
+});
+
+// activity assignment time routes
+Route::middleware('auth:sanctum')->group(function () {
+    // Get all activity assignment times (with filters)
+    Route::get('/activity-assignment-times', [ActivityAssignmentTimeController::class, 'index']);
+    
+    // Activity assignment times by activity
+    Route::get('/activities/{activity}/assignment-times', [ActivityAssignmentTimeController::class, 'indexByActivity']);
+    Route::post('/activities/{activity}/assignment-times', [ActivityAssignmentTimeController::class, 'store']);
+    Route::post('/activities/{activity}/assignment-times/bulk', [ActivityAssignmentTimeController::class, 'storeBulk']);
+    
+    // Activity assignment times by assignment
+    Route::get('/assignments/{assignment}/activity-times', [ActivityAssignmentTimeController::class, 'indexByAssignment']);
+    
+    // Individual activity assignment time operations
+    Route::get('/activity-assignment-times/{activityAssignmentTime}', [ActivityAssignmentTimeController::class, 'show']);
+    Route::put('/activity-assignment-times/{activityAssignmentTime}', [ActivityAssignmentTimeController::class, 'update']);
+    Route::delete('/activity-assignment-times/{activityAssignmentTime}', [ActivityAssignmentTimeController::class, 'destroy']);
+    
+    // Bulk delete
+    Route::post('/activity-assignment-times/delete-bulk', [ActivityAssignmentTimeController::class, 'destroyBulk']);
+});
+
+// schedule routes
+Route::middleware('auth:sanctum')->group(function () {
+    // Get all schedules (with filters)
+    Route::get('/schedules', [ScheduleController::class, 'index']);
+    
+    // Get schedules by project
+    Route::get('/projects/{project}/schedules', [ScheduleController::class, 'indexByProject']);
+    Route::post('/projects/{project}/schedules', [ScheduleController::class, 'store']);
+    Route::post('/projects/{project}/schedules/bulk', [ScheduleController::class, 'storeBulk']);
+    Route::get('/projects/{project}/schedules/sheet', [ScheduleController::class, 'sheet']);
+    
+    // Get schedules by user
+    Route::get('/users/{user}/schedules', [ScheduleController::class, 'indexByUser']);
+    
+    // Individual schedule operations
+    Route::get('/schedules/{schedule}', [ScheduleController::class, 'show']);
+    Route::put('/schedules/{schedule}', [ScheduleController::class, 'update']);
+    Route::delete('/schedules/{schedule}', [ScheduleController::class, 'destroy']);
+    
+    // Bulk delete
+    Route::post('/schedules/delete-bulk', [ScheduleController::class, 'destroyBulk']);
 });
