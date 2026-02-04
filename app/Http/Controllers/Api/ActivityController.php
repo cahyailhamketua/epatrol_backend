@@ -11,24 +11,24 @@ use Illuminate\Support\Facades\DB;
 class ActivityController extends Controller
 {
     /**
-     * LIST ACTIVITY BY POST + SHIFT
-     * GET /posts/{post}/activities?shift_id=
+     * LIST ACTIVITY BY POST + assignment
+     * GET /posts/{post}/activities?assignment_id=
      */
     public function index(Request $request, Post $post)
     {
         $this->authorize('viewAny', Activity::class);
 
         $request->validate([
-            'shift_id' => 'nullable|exists:shifts,id',
+            'assignment_id' => 'nullable|exists:assignments,id',
         ]);
 
         $activities = Activity::where('post_id', $post->id)
             ->where('active', true)
-            ->whereHas('shiftTimes', function ($q) use ($request) {
-                $q->where('shift_id', $request->shift_id);
+            ->whereHas('assignmentTimes', function ($q) use ($request) {
+                $q->where('assignment_id', $request->assignment_id);
             })
-            ->with(['shiftTimes' => function ($q) use ($request) {
-                $q->where('shift_id', $request->shift_id);
+            ->with(['assignmentTimes' => function ($q) use ($request) {
+                $q->where('assignment_id', $request->assignment_id);
             }])
             ->orderBy('name')
             ->get();
@@ -39,7 +39,7 @@ class ActivityController extends Controller
     }
 
     /**
-     * CREATE ACTIVITY + SHIFT TIMES
+     * CREATE ACTIVITY + assignment TIMES
      * POST /posts/{post}/activities
      */
     public function store(Request $request, Post $post)
@@ -51,10 +51,10 @@ class ActivityController extends Controller
             'location' => 'required|string|max:100',
             'active' => 'boolean',
 
-            'shift_times' => 'required|array|min:1',
-            'shift_times.*.shift_id' => 'required|exists:shifts,id',
-            'shift_times.*.start_time' => 'required|date_format:H:i',
-            'shift_times.*.end_time' => 'required|date_format:H:i',
+            'assignment_times' => 'required|array|min:1',
+            'assignment_times.*.assignment_id' => 'required|exists:assignments,id',
+            'assignment_times.*.start_time' => 'required|date_format:H:i',
+            'assignment_times.*.end_time' => 'required|date_format:H:i',
         ]);
 
         $activity = DB::transaction(function () use ($validated, $post) {
@@ -64,8 +64,8 @@ class ActivityController extends Controller
                 'active' => $validated['active'] ?? true,
             ]);
 
-            foreach ($validated['shift_times'] as $time) {
-                $activity->shiftTimes()->create($time);
+            foreach ($validated['assignment_times'] as $time) {
+                $activity->assignmentTimes()->create($time);
             }
 
             return $activity;
@@ -73,7 +73,7 @@ class ActivityController extends Controller
 
         return response()->json([
             'message' => 'Activity created successfully',
-            'data' => $activity->load('shiftTimes'),
+            'data' => $activity->load('assignmentTimes'),
         ], 201);
     }
 
