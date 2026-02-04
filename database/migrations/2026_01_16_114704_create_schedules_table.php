@@ -15,11 +15,11 @@ return new class extends Migration
             $table->id();
             $table->foreignId('project_id')->constrained()->cascadeOnDelete();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('shift_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('assignment_id')->constrained()->cascadeOnDelete();
         
             $table->date('date');
         
-            $table->string('planned_code')->nullable(); 
+
             $table->timestamps();
         });
         

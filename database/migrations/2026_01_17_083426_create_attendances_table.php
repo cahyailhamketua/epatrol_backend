@@ -16,7 +16,7 @@ return new class extends Migration
             $table->foreignId('project_id')->constrained()->cascadeOnDelete();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
             $table->foreignId('schedule_id')->nullable()->constrained()->nullOnDelete();
-            $table->foreignId('shift_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('assignment_id')->constrained()->cascadeOnDelete();
             $table->foreignId('post_id')->nullable()->constrained()->nullOnDelete();
         
             $table->date('date');

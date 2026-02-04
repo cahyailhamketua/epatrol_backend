@@ -27,9 +27,9 @@ class Schedule extends Model
         return $this->belongsTo(User::class);
     }
 
-    public function shift()
+    public function assignment()
     {
-        return $this->belongsTo(Shift::class);
+        return $this->belongsTo(Assignment::class);
     }
 
     public function attendance()

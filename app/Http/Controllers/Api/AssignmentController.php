@@ -4,20 +4,20 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Project;
-use App\Models\Shift;
+use App\Models\assignment;
 use Illuminate\Http\Request;
 
-class ShiftController extends Controller
+class assignmentController extends Controller
 {
     /**
-     * LIST SHIFT PER PROJECT
-     * GET /projects/{project}/shifts
+     * LIST assignment PER PROJECT
+     * GET /projects/{project}/assignments
      */
     public function index(Project $project)
     {
-        $this->authorize('viewAny', [Shift::class, $project]);
+        $this->authorize('viewAny', [assignment::class, $project]);
 
-        $shifts = $project->shifts()
+        $assignments = $project->assignments()
             ->select(
                 'id',
                 'project_id',
@@ -31,17 +31,17 @@ class ShiftController extends Controller
             ->get();
 
         return response()->json([
-            'data' => $shifts,
+            'data' => $assignments,
         ]);
     }
 
     /**
-     * CREATE SHIFT
-     * POST /projects/{project}/shifts
+     * CREATE assignment
+     * POST /projects/{project}/assignments
      */
     public function store(Request $request, Project $project)
     {
-        $this->authorize('manage', [Shift::class, $project]);
+        $this->authorize('manage', [assignment::class, $project]);
 
         $validated = $request->validate([
             'name'         => 'required|string|max:100',
@@ -51,34 +51,34 @@ class ShiftController extends Controller
             'grace_period' => 'nullable|integer|min:0',
         ]);
 
-        $shift = $project->shifts()->create($validated);
+        $assignment = $project->assignments()->create($validated);
 
         return response()->json([
-            'message' => 'Shift created successfully',
-            'data'    => $shift,
+            'message' => 'assignment created successfully',
+            'data'    => $assignment,
         ], 201);
     }
 
     /**
-     * DETAIL SHIFT
-     * GET /shifts/{shift}
+     * DETAIL assignment
+     * GET /assignments/{assignment}
      */
-    public function show(Shift $shift)
+    public function show(assignment $assignment)
     {
-        $this->authorize('view', $shift);
+        $this->authorize('view', $assignment);
 
         return response()->json([
-            'data' => $shift,
+            'data' => $assignment,
         ]);
     }
 
     /**
-     * UPDATE SHIFT
-     * PUT /shifts/{shift}
+     * UPDATE assignment
+     * PUT /assignments/{assignment}
      */
-    public function update(Request $request, Shift $shift)
+    public function update(Request $request, assignment $assignment)
     {
-        $this->authorize('manage', [Shift::class, $shift->project]);
+        $this->authorize('manage', [assignment::class, $assignment->project]);
 
         $validated = $request->validate([
             'name'         => 'sometimes|string|max:100',
@@ -88,26 +88,26 @@ class ShiftController extends Controller
             'grace_period' => 'sometimes|integer|min:0',
         ]);
 
-        $shift->update($validated);
+        $assignment->update($validated);
 
         return response()->json([
-            'message' => 'Shift updated successfully',
-            'data'    => $shift,
+            'message' => 'assignment updated successfully',
+            'data'    => $assignment,
         ]);
     }
 
     /**
-     * DELETE SHIFT
-     * DELETE /shifts/{shift}
+     * DELETE assignment
+     * DELETE /assignments/{assignment}
      */
-    public function destroy(Shift $shift)
+    public function destroy(assignment $assignment)
     {
-        $this->authorize('manage', [Shift::class, $shift->project]);
+        $this->authorize('manage', [assignment::class, $assignment->project]);
 
-        $shift->delete();
+        $assignment->delete();
 
         return response()->json([
-            'message' => 'Shift deleted successfully',
+            'message' => 'assignment deleted successfully',
         ]);
     }
 }

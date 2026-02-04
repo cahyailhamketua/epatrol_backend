@@ -14,14 +14,14 @@ return new class extends Migration
         Schema::create('activity_shift_times', function (Blueprint $table) {
             $table->id();
             $table->foreignId('activity_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('shift_id')->constrained()->cascadeOnDelete();
+            $table->foreignId('assignment_id')->constrained()->cascadeOnDelete();
         
             $table->time('start_time');
             $table->time('end_time');
         
             $table->timestamps();
         
-            $table->unique(['activity_id', 'shift_id']);
+            $table->unique(['activity_id', 'assignment_id']);
         });        
     }
 

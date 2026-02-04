@@ -8,7 +8,7 @@ class ActivityShiftTime extends Model
 {
     protected $fillable = [
         'activity_id',
-        'shift_id',
+        'assignment_id',
         'start_time',
         'end_time',
     ];
@@ -18,9 +18,9 @@ class ActivityShiftTime extends Model
         return $this->belongsTo(Activity::class);
     }
 
-    public function shift()
+    public function assignment()
     {
-        return $this->belongsTo(Shift::class);
+        return $this->belongsTo(Assignment::class);
     }
 }
 

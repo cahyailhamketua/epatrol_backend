@@ -13,7 +13,7 @@ class Attendance extends Model
         'project_id',
         'user_id',
         'schedule_id',
-        'shift_id',
+        'assignment_id',
         'post_id',
         'date',
         'check_in_at',
@@ -47,9 +47,9 @@ class Attendance extends Model
         return $this->belongsTo(Schedule::class);
     }
 
-    public function shift()
+    public function assignment()
     {
-        return $this->belongsTo(Shift::class);
+        return $this->belongsTo(Assignment::class);
     }
 
     public function post()
