@@ -3,13 +3,13 @@
 namespace App\Policies;
 
 use App\Models\User;
-use App\Models\Shift;
+use App\Models\Assignment;
 use App\Models\Project;
 
-class ShiftPolicy
+class AssignmentPolicy
 {
     /**
-     * LIST SHIFT
+     * LIST ASSIGNMENT
      */
     public function viewAny(User $user, Project $project): bool
     {
@@ -32,11 +32,11 @@ class ShiftPolicy
     }
 
     /**
-     * DETAIL SHIFT
+     * DETAIL ASSIGNMENT
      */
-    public function view(User $user, Shift $shift): bool
+    public function view(User $user, Assignment $assignment): bool
     {
-        $project = $shift->project;
+        $project = $assignment->project;
 
         if ($user->role === 'dev') {
             return true;
