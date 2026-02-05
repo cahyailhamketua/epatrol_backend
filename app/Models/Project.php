@@ -40,6 +40,11 @@ class Project extends Model
         return $this->hasMany(Shift::class);
     }
 
+    public function assignments()
+    {
+        return $this->hasMany(Assignment::class);
+    }
+
     public function schedules()
     {
         return $this->hasMany(Schedule::class);

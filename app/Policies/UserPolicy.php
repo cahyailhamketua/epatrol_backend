@@ -46,7 +46,7 @@ class UserPolicy
         ]);
     }
 
-    public function view(User $auth, user $target): bool
+    public function view(User $auth, User $target): bool
     {
         //return true;
         return in_array($auth->role, [

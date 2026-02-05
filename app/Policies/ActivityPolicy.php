@@ -4,6 +4,7 @@ namespace App\Policies;
 
 use App\Models\Activity;
 use App\Models\User;
+use App\Models\Project;
 use Illuminate\Auth\Access\Response;
 
 class ActivityPolicy
@@ -25,7 +26,7 @@ class ActivityPolicy
     /**
      * Manage activities (create/update/delete)
      */
-    public function manage(User $user): bool
+    public function manage(User $user, Project $project): bool
     {
         if ($user->role === 'dev') {
             return true;

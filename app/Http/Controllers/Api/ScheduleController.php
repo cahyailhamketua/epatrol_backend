@@ -7,7 +7,9 @@ use App\Models\Project;
 use App\Models\Schedule;
 use App\Models\User;
 use App\Models\Assignment;
+use App\Models\Post;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 class ScheduleController extends Controller
 {
@@ -20,7 +22,9 @@ class ScheduleController extends Controller
      */
     public function index(Request $request)
     {
-        $query = Schedule::with(['project', 'user', 'assignment']);
+        $this->authorize('viewAny', Schedule::class);
+
+        $query = Schedule::with(['project', 'post', 'user', 'assignment']);
 
         // Filter by project
         if ($request->has('project_id')) {
@@ -75,7 +79,9 @@ class ScheduleController extends Controller
      */
     public function indexByProject(Request $request, Project $project)
     {
-        $query = $project->schedules()->with(['user', 'assignment']);
+        $this->authorize('viewAnyByProject', [Schedule::class, $project]);
+
+        $query = $project->schedules()->with(['post', 'user', 'assignment']);
 
         // Filter by date
         if ($request->has('date')) {
@@ -118,7 +124,7 @@ class ScheduleController extends Controller
      */
     public function indexByUser(Request $request, User $user)
     {
-        $query = $user->schedules()->with(['project', 'assignment']);
+        $query = $user->schedules()->with(['project', 'post', 'assignment']);
 
         // Filter by date range
         if ($request->has('from_date') && $request->has('to_date')) {
@@ -161,11 +167,31 @@ class ScheduleController extends Controller
      */
     public function store(Request $request, Project $project)
     {
-        $validated = $request->validate([
-            'user_id' => 'required|exists:users,id',
-            'assignment_id' => 'required|exists:assignments,id',
-            'date' => 'required|date_format:Y-m-d',
-        ]);
+        $this->authorize('manage', [Schedule::class, $project]);
+
+        try {
+            $validated = $request->validate([
+                'post_id' => 'required|exists:posts,id',
+                'user_id' => 'required|exists:users,id',
+                'assignment_id' => 'required|exists:assignments,id',
+                'date' => 'required|date_format:Y-m-d',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
+
+        // Check if post belongs to project
+        $post = Post::find($validated['post_id']);
+        if ($post->project_id !== $project->id) {
+            return response()->json([
+                'message' => 'Post does not belong to this project',
+            ], 403);
+        }
 
         // Check if user belongs to project
         $user = User::find($validated['user_id']);
@@ -197,7 +223,7 @@ class ScheduleController extends Controller
 
         $validated['project_id'] = $project->id;
         $schedule = Schedule::create($validated);
-        $schedule->load(['project', 'user', 'assignment']);
+        $schedule->load(['project', 'post', 'user', 'assignment']);
 
         return response()->json([
             'message' => 'Schedule created successfully',
@@ -227,18 +253,40 @@ class ScheduleController extends Controller
      */
     public function storeBulk(Request $request, Project $project)
     {
-        $validated = $request->validate([
-            'schedules' => 'required|array|min:1',
-            'schedules.*.user_id' => 'required|exists:users,id',
-            'schedules.*.assignment_id' => 'required|exists:assignments,id',
-            'schedules.*.date' => 'required|date_format:Y-m-d',
-        ]);
+        $this->authorize('manage', [Schedule::class, $project]);
+
+        try {
+            $validated = $request->validate([
+                'schedules' => 'required|array|min:1',
+                'schedules.*.post_id' => 'required|exists:posts,id',
+                'schedules.*.user_id' => 'required|exists:users,id',
+                'schedules.*.assignment_id' => 'required|exists:assignments,id',
+                'schedules.*.date' => 'required|date_format:Y-m-d',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $created = [];
         $failed = [];
 
         foreach ($validated['schedules'] as $index => $scheduleData) {
             try {
+                // Check if post belongs to project
+                $post = Post::find($scheduleData['post_id']);
+                if ($post->project_id !== $project->id) {
+                    $failed[] = [
+                        'index' => $index,
+                        'error' => 'Post does not belong to this project',
+                    ];
+                    continue;
+                }
+
                 // Check if user belongs to project
                 $user = User::find($scheduleData['user_id']);
                 if ($user->project_id !== $project->id) {
@@ -275,7 +323,7 @@ class ScheduleController extends Controller
 
                 $scheduleData['project_id'] = $project->id;
                 $schedule = Schedule::create($scheduleData);
-                $schedule->load(['project', 'user', 'assignment']);
+                $schedule->load(['project', 'post', 'user', 'assignment']);
                 $created[] = $schedule;
             } catch (\Exception $e) {
                 $failed[] = [
@@ -300,7 +348,9 @@ class ScheduleController extends Controller
      */
     public function show(Schedule $schedule)
     {
-        $schedule->load(['project', 'user', 'assignment']);
+        $this->authorize('view', $schedule);
+
+        $schedule->load(['project', 'post', 'user', 'assignment']);
 
         return response()->json([
             'data' => $schedule,
@@ -319,11 +369,22 @@ class ScheduleController extends Controller
      */
     public function update(Request $request, Schedule $schedule)
     {
-        $validated = $request->validate([
-            'user_id' => 'sometimes|exists:users,id',
-            'assignment_id' => 'sometimes|exists:assignments,id',
-            'date' => 'sometimes|date_format:Y-m-d',
-        ]);
+        $this->authorize('manage', [Schedule::class, $schedule->project]);
+
+        try {
+            $validated = $request->validate([
+                'user_id' => 'sometimes|exists:users,id',
+                'assignment_id' => 'sometimes|exists:assignments,id',
+                'date' => 'sometimes|date_format:Y-m-d',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         // Check if trying to change user or date, check for conflicts
         if (isset($validated['user_id']) || isset($validated['date'])) {
@@ -355,7 +416,7 @@ class ScheduleController extends Controller
         }
 
         $schedule->update($validated);
-        $schedule->load(['project', 'user', 'assignment']);
+        $schedule->load(['project', 'post', 'user', 'assignment']);
 
         return response()->json([
             'message' => 'Schedule updated successfully',
@@ -369,6 +430,8 @@ class ScheduleController extends Controller
      */
     public function destroy(Schedule $schedule)
     {
+        $this->authorize('manage', [Schedule::class, $schedule->project]);
+
         $schedule->delete();
 
         return response()->json([
@@ -387,6 +450,8 @@ class ScheduleController extends Controller
      */
     public function destroyBulk(Request $request)
     {
+        $this->authorize('viewAny', Schedule::class);
+
         $validated = $request->validate([
             'ids' => 'required|array|min:1',
             'ids.*' => 'integer|exists:schedules,id',
@@ -408,6 +473,8 @@ class ScheduleController extends Controller
      */
     public function sheet(Request $request, Project $project)
     {
+        $this->authorize('viewAnyByProject', [Schedule::class, $project]);
+
         $validated = $request->validate([
             'from_date' => 'required|date_format:Y-m-d',
             'to_date' => 'required|date_format:Y-m-d',
@@ -420,7 +487,7 @@ class ScheduleController extends Controller
 
         $schedules = $project->schedules()
             ->whereBetween('date', [$validated['from_date'], $validated['to_date']])
-            ->with(['user', 'assignment'])
+            ->with(['post', 'user', 'assignment'])
             ->get();
 
         // Group schedules by user_id and date

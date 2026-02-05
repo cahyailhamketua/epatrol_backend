@@ -7,6 +7,7 @@ use App\Models\Activity;
 use App\Models\ActivityAssignmentTime;
 use App\Models\Assignment;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
 class ActivityAssignmentTimeController extends Controller
 {
@@ -17,6 +18,8 @@ class ActivityAssignmentTimeController extends Controller
      */
     public function index(Request $request)
     {
+        $this->authorize('viewAny', ActivityAssignmentTime::class);
+
         $query = ActivityAssignmentTime::with(['activity', 'assignment']);
 
         // Filter by activity
@@ -43,6 +46,8 @@ class ActivityAssignmentTimeController extends Controller
      */
     public function indexByActivity(Activity $activity)
     {
+        $this->authorize('manage', $activity);
+
         $times = $activity->assignmentTimes()
             ->with('assignment')
             ->select('id', 'activity_id', 'assignment_id', 'start_time', 'end_time')
@@ -88,11 +93,22 @@ class ActivityAssignmentTimeController extends Controller
      */
     public function store(Request $request, Activity $activity)
     {
-        $validated = $request->validate([
-            'assignment_id' => 'required|exists:assignments,id',
-            'start_time' => 'required|date_format:H:i',
-            'end_time' => 'required|date_format:H:i|after:start_time',
-        ]);
+        $this->authorize('manage', $activity);
+
+        try {
+            $validated = $request->validate([
+                'assignment_id' => 'required|exists:assignments,id',
+                'start_time' => 'required|date_format:H:i',
+                'end_time' => 'required|date_format:H:i|after:start_time',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         // Check if this combination already exists
         $existingTime = $activity->assignmentTimes()
@@ -131,6 +147,8 @@ class ActivityAssignmentTimeController extends Controller
      */
     public function show(ActivityAssignmentTime $activityAssignmentTime)
     {
+        $this->authorize('view', $activityAssignmentTime);
+
         $activityAssignmentTime->load(['activity', 'assignment']);
 
         return response()->json([
@@ -150,10 +168,21 @@ class ActivityAssignmentTimeController extends Controller
      */
     public function update(Request $request, ActivityAssignmentTime $activityAssignmentTime)
     {
-        $validated = $request->validate([
-            'start_time' => 'sometimes|date_format:H:i',
-            'end_time' => 'sometimes|date_format:H:i',
-        ]);
+        $this->authorize('manage', $activityAssignmentTime->activity);
+
+        try {
+            $validated = $request->validate([
+                'start_time' => 'sometimes|date_format:H:i',
+                'end_time' => 'sometimes|date_format:H:i',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         // If both times are provided, validate end_time > start_time
         if (isset($validated['start_time']) && isset($validated['end_time'])) {
@@ -193,6 +222,8 @@ class ActivityAssignmentTimeController extends Controller
      */
     public function destroy(ActivityAssignmentTime $activityAssignmentTime)
     {
+        $this->authorize('manage', $activityAssignmentTime->activity);
+
         $activityAssignmentTime->delete();
 
         return response()->json([
@@ -224,12 +255,23 @@ class ActivityAssignmentTimeController extends Controller
      */
     public function storeBulk(Request $request, Activity $activity)
     {
-        $validated = $request->validate([
-            'times' => 'required|array|min:1',
-            'times.*.assignment_id' => 'required|exists:assignments,id',
-            'times.*.start_time' => 'required|date_format:H:i',
-            'times.*.end_time' => 'required|date_format:H:i',
-        ]);
+        $this->authorize('manage', $activity);
+
+        try {
+            $validated = $request->validate([
+                'times' => 'required|array|min:1',
+                'times.*.assignment_id' => 'required|exists:assignments,id',
+                'times.*.start_time' => 'required|date_format:H:i',
+                'times.*.end_time' => 'required|date_format:H:i',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $created = [];
         $failed = [];
@@ -300,10 +342,21 @@ class ActivityAssignmentTimeController extends Controller
      */
     public function destroyBulk(Request $request)
     {
-        $validated = $request->validate([
-            'ids' => 'required|array|min:1',
-            'ids.*' => 'integer|exists:activity_assignment_times,id',
-        ]);
+        $this->authorize('viewAny', ActivityAssignmentTime::class);
+
+        try {
+            $validated = $request->validate([
+                'ids' => 'required|array|min:1',
+                'ids.*' => 'integer|exists:activity_assignment_times,id',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         ActivityAssignmentTime::whereIn('id', $validated['ids'])->delete();
 

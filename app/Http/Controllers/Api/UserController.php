@@ -10,6 +10,7 @@ use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class UserController extends Controller
 {
@@ -21,7 +22,21 @@ class UserController extends Controller
         $auth = $request->user();
 
         $this->authorize('viewAny', User::class);
-    
+
+        try {
+            $request->validate([
+                'search' => 'nullable|string',
+                'active' => 'nullable|boolean',
+                'per_page' => 'nullable|integer|min:1',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
         $users = User::query()
             ->select(
                 'id',
@@ -70,16 +85,25 @@ class UserController extends Controller
             ], 403);
         }
 
-        $validated = $request->validate([
-            'organization_id' => 'nullable|exists:organizations,id',
-            'project_id'      => 'nullable|exists:projects,id',
-            'full_name'       => 'required|string|max:255',
-            'username'        => 'required|string|unique:users,username',
-            'email'           => 'nullable|email|unique:users,email',
-            'phone'           => 'nullable|string',
-            'role'            => 'required|string',
-            'password'        => 'required|min:6',
-        ]);
+        try {
+            $validated = $request->validate([
+                'organization_id' => 'nullable|exists:organizations,id',
+                'project_id'      => 'nullable|exists:projects,id',
+                'full_name'       => 'required|string|max:255',
+                'username'        => 'required|string|unique:users,username',
+                'email'           => 'nullable|email|unique:users,email',
+                'phone'           => 'nullable|string',
+                'role'            => 'required|string',
+                'password'        => 'required|min:6',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $validated['password'] = bcrypt($validated['password']);
 

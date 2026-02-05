@@ -9,6 +9,7 @@ use Illuminate\Http\Request;
 use App\Models\QrCode;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 
 class PatrolPointController extends Controller
 {
@@ -20,13 +21,22 @@ class PatrolPointController extends Controller
     {
         $this->authorize('manage', [PatrolPoint::class, $post->project]);
 
-        $validated = $request->validate([
-            'name' => 'required|string|max:100',
-            'sequence_order' => 'required|integer|min:1',
-            'latitude' => 'required|numeric',
-            'longitude' => 'required|numeric',
-            'radius' => 'nullable|integer|min:1',
-        ]);
+        try {
+            $validated = $request->validate([
+                'name' => 'required|string|max:100',
+                'sequence_order' => 'required|integer|min:1',
+                'latitude' => 'required|numeric',
+                'longitude' => 'required|numeric',
+                'radius' => 'nullable|integer|min:1',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         DB::transaction(function () use ($post, $validated, &$point) {
 
@@ -55,14 +65,23 @@ class PatrolPointController extends Controller
             [PatrolPoint::class, $patrolPoint->post->project]
         );
 
-        $validated = $request->validate([
-            'name' => 'sometimes|string|max:100',
-            'sequence_order' => 'sometimes|integer|min:1',
-            'latitude' => 'sometimes|numeric',
-            'longitude' => 'sometimes|numeric',
-            'radius' => 'nullable|integer|min:1',
-            'regenerate_qr' => 'sometimes|boolean',
-        ]);
+        try {
+            $validated = $request->validate([
+                'name' => 'sometimes|string|max:100',
+                'sequence_order' => 'sometimes|integer|min:1',
+                'latitude' => 'sometimes|numeric',
+                'longitude' => 'sometimes|numeric',
+                'radius' => 'nullable|integer|min:1',
+                'regenerate_qr' => 'sometimes|boolean',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         DB::transaction(function () use ($patrolPoint, $validated) {
 

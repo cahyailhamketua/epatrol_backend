@@ -11,15 +11,20 @@ class Schedule extends Model
 
     protected $fillable = [
         'project_id',
+        'post_id',
         'user_id',
-        'shift_id',
+        'assignment_id',
         'date',
-        'planned_code',
     ];
 
     public function project()
     {
         return $this->belongsTo(Project::class);
+    }
+
+    public function post()
+    {
+        return $this->belongsTo(Post::class);
     }
 
     public function user()

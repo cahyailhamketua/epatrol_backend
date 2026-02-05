@@ -7,6 +7,7 @@ use App\Models\Post;
 use App\Models\Project;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class PostController extends Controller
 {   
@@ -78,17 +79,26 @@ class PostController extends Controller
     {
         $this->authorize('manage', [Post::class, $project]);
 
-        $validated = $request->validate([
-            'name' => 'required|string|max:100',
-            'type' => 'required|in:static,mobile',
+        try {
+            $validated = $request->validate([
+                'name' => 'required|string|max:100',
+                'type' => 'required|in:static,mobile',
 
-            'patrol_points' => 'required|array|min:1',
-            'patrol_points.*.name' => 'required|string|max:100',
-            'patrol_points.*.sequence_order' => 'required|integer|min:1',
-            'patrol_points.*.latitude' => 'required|numeric',
-            'patrol_points.*.longitude' => 'required|numeric',
-            'patrol_points.*.radius' => 'nullable|integer|min:1',
-        ]);
+                'patrol_points' => 'required|array|min:1',
+                'patrol_points.*.name' => 'required|string|max:100',
+                'patrol_points.*.sequence_order' => 'required|integer|min:1',
+                'patrol_points.*.latitude' => 'required|numeric',
+                'patrol_points.*.longitude' => 'required|numeric',
+                'patrol_points.*.radius' => 'nullable|integer|min:1',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $post = DB::transaction(function () use ($validated, $project) {
 
@@ -135,10 +145,19 @@ class PostController extends Controller
     {
         $this->authorize('manage', [Post::class, $post->project]);
 
-        $validated = $request->validate([
-            'name' => 'sometimes|string|max:100',
-            'type' => 'sometimes|in:static,mobile',
-        ]);
+        try {
+            $validated = $request->validate([
+                'name' => 'sometimes|string|max:100',
+                'type' => 'sometimes|in:static,mobile',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $post->update($validated);
 

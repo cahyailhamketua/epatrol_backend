@@ -79,7 +79,7 @@ Route::middleware('auth:sanctum')->group(function () {
 Route::middleware('auth:sanctum')->group(function () {
     Route::get('/projects/{project}/assignments', [AssignmentController::class, 'index']);
     Route::post('/projects/{project}/assignments', [AssignmentController::class, 'store']);
-
+    
     Route::get('/assignments/{assignment}', [AssignmentController::class, 'show']);
     Route::put('/assignments/{assignment}', [AssignmentController::class, 'update']);
     Route::delete('/assignments/{assignment}', [AssignmentController::class, 'destroy']);
@@ -108,22 +108,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
 // activity routes
 Route::middleware('auth:sanctum')->group(function () {
-    // Get all activities (with filters)
-    Route::get('/activities', [ActivityController::class, 'index']);
-    
-    // Get activities by post
-    Route::get('/posts/{post}/activities', [ActivityController::class, 'indexByPost']);
+    Route::get('/posts/{post}/activities', [ActivityController::class, 'index']);
     Route::post('/posts/{post}/activities', [ActivityController::class, 'store']);
     
-    // Individual activity operations
-    Route::get('/activities/{activity}', [ActivityController::class, 'show']);
     Route::put('/activities/{activity}', [ActivityController::class, 'update']);
     Route::delete('/activities/{activity}', [ActivityController::class, 'destroy']);
-    Route::patch('/activities/{activity}/activate', [ActivityController::class, 'activate']);
-    Route::patch('/activities/{activity}/deactivate', [ActivityController::class, 'deactivate']);
-    
-    // Bulk delete
-    Route::post('/activities/delete-bulk', [ActivityController::class, 'destroyBulk']);
 });
 
 // activity assignment time routes

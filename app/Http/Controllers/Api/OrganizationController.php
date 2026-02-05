@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\Organization;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class OrganizationController extends Controller
 {
@@ -49,17 +50,26 @@ class OrganizationController extends Controller
     {
         $this->authorize('create', Organization::class);
 
-        $validated = $request->validate([
-            'name' => 'required|string|max:255',
-            'email' => 'required|string|max:255',
-            'phone' => 'nullable|string|max:20',
-            'logo' => 'nullable|string',
-            'code' => 'required|string|max:50|unique:organizations,code',
-            'address' => 'nullable|string',
-            'start_date' => 'nullable|string',
-            'end_date' => 'nullable|string',
+        try {
+            $validated = $request->validate([
+                'name' => 'required|string|max:255',
+                'email' => 'required|string|max:255',
+                'phone' => 'nullable|string|max:20',
+                'logo' => 'nullable|string',
+                'code' => 'required|string|max:50|unique:organizations,code',
+                'address' => 'nullable|string',
+                'start_date' => 'nullable|string',
+                'end_date' => 'nullable|string',
 
-        ]);
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $org = Organization::create($validated);
 
@@ -76,19 +86,28 @@ class OrganizationController extends Controller
     {
         $this->authorize('update', $organization);
 
-        $validated = $request->validate([
-            'name' => 'sometimes|string|max:255',
-            'email' => 'sometimes|string|max:255',
-            'phone' => 'sometimes|string|max:20',
-            'code' => [
-                'sometimes',
-                'string',
-                Rule::unique('organizations')->ignore($organization->id),
-            ],
-            'address' => 'sometimes|string',
-            'start_date' => 'sometimes|string',
-            'end_date' => 'sometimes|string',
-        ]);
+        try {
+            $validated = $request->validate([
+                'name' => 'sometimes|string|max:255',
+                'email' => 'sometimes|string|max:255',
+                'phone' => 'sometimes|string|max:20',
+                'code' => [
+                    'sometimes',
+                    'string',
+                    Rule::unique('organizations')->ignore($organization->id),
+                ],
+                'address' => 'sometimes|string',
+                'start_date' => 'sometimes|string',
+                'end_date' => 'sometimes|string',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $organization->update($validated);
 

@@ -8,6 +8,7 @@ use App\Models\User;
 use App\Models\Organization;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
 
 class ProjectController extends Controller
 {
@@ -69,15 +70,24 @@ class ProjectController extends Controller
     {
         $this->authorize('create', Project::class);
 
-        $validated = $request->validate([
-            'organization_id' => 'required|exists:organizations,id',
-            'name' => 'required|string|max:255',
-            'code' => 'nullable|string|max:50|unique:projects,code',
-            'location_latitude' => 'nullable|string|max:255',
-            'location_longitude' => 'nullable|string|max:255',
-            'location_address' => 'nullable|string|max:255',
-            'location_city' => 'nullable|string|max:255',
-        ]);
+        try {
+            $validated = $request->validate([
+                'organization_id' => 'required|exists:organizations,id',
+                'name' => 'required|string|max:255',
+                'code' => 'nullable|string|max:50|unique:projects,code',
+                'location_latitude' => 'nullable|string|max:255',
+                'location_longitude' => 'nullable|string|max:255',
+                'location_address' => 'nullable|string|max:255',
+                'location_city' => 'nullable|string|max:255',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $project = Project::create($validated);
 
@@ -94,19 +104,28 @@ class ProjectController extends Controller
     {
         $this->authorize('update', $project);
 
-        $validated = $request->validate([
-            'organization_id' => 'sometimes|exists:organizations,id',
-            'name' => 'sometimes|string|max:255',
-            'code' => [
-                'sometimes',
-                'string',
-                Rule::unique('projects')->ignore($project->id),
-            ],
-            'location_latitude' => 'sometimes|string|max:255',
-            'location_longitude' => 'sometimes|string|max:255',
-            'location_address' => 'sometimes|string|max:255',
-            'location_city' => 'sometimes|string|max:255',
-        ]);
+        try {
+            $validated = $request->validate([
+                'organization_id' => 'sometimes|exists:organizations,id',
+                'name' => 'sometimes|string|max:255',
+                'code' => [
+                    'sometimes',
+                    'string',
+                    Rule::unique('projects')->ignore($project->id),
+                ],
+                'location_latitude' => 'sometimes|string|max:255',
+                'location_longitude' => 'sometimes|string|max:255',
+                'location_address' => 'sometimes|string|max:255',
+                'location_city' => 'sometimes|string|max:255',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $project->update($validated);
 

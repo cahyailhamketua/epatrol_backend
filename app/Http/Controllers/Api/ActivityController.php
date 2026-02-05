@@ -7,6 +7,7 @@ use App\Models\Activity;
 use App\Models\Post;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class ActivityController extends Controller
 {
@@ -18,9 +19,18 @@ class ActivityController extends Controller
     {
         $this->authorize('viewAny', Activity::class);
 
-        $request->validate([
-            'assignment_id' => 'nullable|exists:assignments,id',
-        ]);
+        try {
+            $request->validate([
+                'assignment_id' => 'nullable|exists:assignments,id',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $activities = Activity::where('post_id', $post->id)
             ->where('active', true)
@@ -46,16 +56,25 @@ class ActivityController extends Controller
     {
         $this->authorize('manage', [Activity::class, $post->project]);
 
-        $validated = $request->validate([
-            'name' => 'required|string|max:100',
-            'location' => 'required|string|max:100',
-            'active' => 'boolean',
+        try {
+            $validated = $request->validate([
+                'name' => 'required|string|max:100',
+                'location' => 'required|string|max:100',
+                'active' => 'boolean',
 
-            'assignment_times' => 'required|array|min:1',
-            'assignment_times.*.assignment_id' => 'required|exists:assignments,id',
-            'assignment_times.*.start_time' => 'required|date_format:H:i',
-            'assignment_times.*.end_time' => 'required|date_format:H:i',
-        ]);
+                'assignment_times' => 'required|array|min:1',
+                'assignment_times.*.assignment_id' => 'required|exists:assignments,id',
+                'assignment_times.*.start_time' => 'required|date_format:H:i',
+                'assignment_times.*.end_time' => 'required|date_format:H:i',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $activity = DB::transaction(function () use ($validated, $post) {
             $activity = $post->activities()->create([
@@ -85,11 +104,20 @@ class ActivityController extends Controller
     {
         $this->authorize('manage', [Activity::class, $activity->post->project]);
 
-        $validated = $request->validate([
-            'name' => 'sometimes|string|max:100',
-            'location' => 'sometimes|string|max:100',
-            'active' => 'sometimes|boolean',
-        ]);
+        try {
+            $validated = $request->validate([
+                'name' => 'sometimes|string|max:100',
+                'location' => 'sometimes|string|max:100',
+                'active' => 'sometimes|boolean',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $activity->update($validated);
 

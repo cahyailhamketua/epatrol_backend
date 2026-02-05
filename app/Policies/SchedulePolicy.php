@@ -3,48 +3,58 @@
 namespace App\Policies;
 
 use App\Models\User;
+use App\Models\Schedule;
 use App\Models\Project;
-use App\Models\PatrolPoint;
 
-class PatrolPointPolicy
+class SchedulePolicy
 {
-    public function viewAny(User $user, Project $project): bool
+    public function viewAny(User $user): bool
     {
-        // DEV full access
+        return in_array($user->role, [
+            'dev',
+            'ho',
+            'admin_project',
+            'komandan_regu',
+            'anggota',
+        ]);
+    }
+
+    public function viewAnyByProject(User $user, Project $project): bool
+    {
         if ($user->role === 'dev') {
             return true;
         }
 
-        // HO → semua project dalam organization
         if ($user->role === 'ho') {
             return $user->organization_id === $project->organization_id;
         }
 
-        // Admin project
-        if ($user->role === 'admin_project') {
+        if (in_array($user->role, ['admin_project', 'komandan_regu', 'anggota'])) {
             return $user->project_id === $project->id;
         }
 
         return false;
     }
 
-    public function view(User $user, PatrolPoint $patrolPoint): bool
+    public function view(User $user, Schedule $schedule): bool
     {
-        $project = $patrolPoint->post->project;
+        $project = $schedule->project;
 
-        // DEV full access
         if ($user->role === 'dev') {
             return true;
         }
 
-        // HO → semua project dalam organization
         if ($user->role === 'ho') {
             return $user->organization_id === $project->organization_id;
         }
 
-        // Admin project
         if ($user->role === 'admin_project') {
             return $user->project_id === $project->id;
+        }
+
+        // anggota dan komandan_regu hanya lihat schedule mereka sendiri
+        if (in_array($user->role, ['anggota', 'komandan_regu'])) {
+            return $user->id === $schedule->user_id && $user->project_id === $project->id;
         }
 
         return false;
@@ -52,17 +62,14 @@ class PatrolPointPolicy
 
     public function manage(User $user, Project $project): bool
     {
-        // DEV full access
         if ($user->role === 'dev') {
             return true;
         }
 
-        // HO → semua project dalam organization
         if ($user->role === 'ho') {
             return $user->organization_id === $project->organization_id;
         }
 
-        // Admin project
         if ($user->role === 'admin_project') {
             return $user->project_id === $project->id;
         }

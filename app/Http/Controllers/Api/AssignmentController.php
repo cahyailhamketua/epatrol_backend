@@ -3,11 +3,12 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Project;
-use App\Models\assignment;
+use App\Models\Project;     
+use App\Models\Assignment;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 
-class assignmentController extends Controller
+class AssignmentController extends Controller
 {
     /**
      * LIST assignment PER PROJECT
@@ -15,7 +16,7 @@ class assignmentController extends Controller
      */
     public function index(Project $project)
     {
-        $this->authorize('viewAny', [assignment::class, $project]);
+        $this->authorize('viewAny', $project);
 
         $assignments = $project->assignments()
             ->select(
@@ -41,15 +42,24 @@ class assignmentController extends Controller
      */
     public function store(Request $request, Project $project)
     {
-        $this->authorize('manage', [assignment::class, $project]);
+        $this->authorize('manage', [Assignment::class, $project]);
 
-        $validated = $request->validate([
-            'name'         => 'required|string|max:100',
-            'code'         => 'required|string|max:50',
-            'start_time'   => 'required|date_format:H:i',
-            'end_time'     => 'required|date_format:H:i',
-            'grace_period' => 'nullable|integer|min:0',
-        ]);
+        try {
+            $validated = $request->validate([
+                'name'         => 'required|string|max:100',
+                'code'         => 'required|string|max:50',
+                'start_time'   => 'required|date_format:H:i',
+                'end_time'     => 'required|date_format:H:i',
+                'grace_period' => 'nullable|integer|min:0',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $assignment = $project->assignments()->create($validated);
 
@@ -63,7 +73,7 @@ class assignmentController extends Controller
      * DETAIL assignment
      * GET /assignments/{assignment}
      */
-    public function show(assignment $assignment)
+    public function show(Assignment $assignment)
     {
         $this->authorize('view', $assignment);
 
@@ -76,17 +86,26 @@ class assignmentController extends Controller
      * UPDATE assignment
      * PUT /assignments/{assignment}
      */
-    public function update(Request $request, assignment $assignment)
+    public function update(Request $request, Assignment $assignment)
     {
-        $this->authorize('manage', [assignment::class, $assignment->project]);
+        $this->authorize('manage', [Assignment::class, $assignment->project]);
 
-        $validated = $request->validate([
-            'name'         => 'sometimes|string|max:100',
-            'code'         => 'sometimes|string|max:50',
-            'start_time'   => 'sometimes|date_format:H:i',
-            'end_time'     => 'sometimes|date_format:H:i',
-            'grace_period' => 'sometimes|integer|min:0',
-        ]);
+        try {
+            $validated = $request->validate([
+                'name'         => 'sometimes|string|max:100',
+                'code'         => 'sometimes|string|max:50',
+                'start_time'   => 'sometimes|date_format:H:i',
+                'end_time'     => 'sometimes|date_format:H:i',
+                'grace_period' => 'sometimes|integer|min:0',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
 
         $assignment->update($validated);
 
@@ -100,9 +119,9 @@ class assignmentController extends Controller
      * DELETE assignment
      * DELETE /assignments/{assignment}
      */
-    public function destroy(assignment $assignment)
+    public function destroy(Assignment $assignment)
     {
-        $this->authorize('manage', [assignment::class, $assignment->project]);
+        $this->authorize('manage', [Assignment::class, $assignment->project]);
 
         $assignment->delete();
 
