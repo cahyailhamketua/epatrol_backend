@@ -8,6 +8,7 @@ use App\Models\Project;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
+use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 class PostController extends Controller
 {   
@@ -17,7 +18,7 @@ class PostController extends Controller
 
         $user = $request->user();
 
-        $query = Post::with('patrolPoints')
+        $query = Post::with(['patrolPoints.qrCode'])
             ->select('id', 'project_id', 'name', 'type')
             ->orderBy('name');
 
@@ -49,6 +50,19 @@ class PostController extends Controller
             ->orderBy('name')
             ->paginate($request->get('per_page', 15));
 
+        $posts->getCollection()->transform(function ($post) {
+            $post->patrolPoints->transform(function ($patrolPoint) {
+                if ($patrolPoint->qrCode) {
+                    $qrCode = QrCode::format('svg')->size(200)->generate($patrolPoint->qrCode->code);
+                    $patrolPoint->qr_code_image = 'data:image/svg+xml;base64,' . base64_encode($qrCode);
+                } else {
+                    $patrolPoint->qr_code_image = null; // Or a default image
+                }
+                return $patrolPoint;
+            });
+            return $post;
+        });
+
         return response()->json($posts);
     }
 
@@ -61,13 +75,24 @@ class PostController extends Controller
         $this->authorize('viewAnyByProject', [Post::class, $project]);
 
         $posts = $project->posts()
-            ->with('patrolPoints')
+            ->with(['patrolPoints.qrCode'])
             ->select('id', 'project_id', 'name', 'type')
             ->orderBy('name')
             ->get();
 
         return response()->json([
-            'data' => $posts,
+            'data' => $posts->transform(function ($post) {
+                $post->patrolPoints->transform(function ($patrolPoint) {
+                    if ($patrolPoint->qrCode) {
+                        $qrCode = QrCode::format('svg')->size(200)->generate($patrolPoint->qrCode->code);
+                        $patrolPoint->qr_code_image = 'data:image/svg+xml;base64,' . base64_encode($qrCode);
+                    } else {
+                        $patrolPoint->qr_code_image = null; // Or a default image
+                    }
+                    return $patrolPoint;
+                });
+                return $post;
+            }),
         ]);
     }
 
