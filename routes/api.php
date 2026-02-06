@@ -159,3 +159,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // Bulk delete
     Route::post('/schedules/delete-bulk', [ScheduleController::class, 'destroyBulk']);
 });
+
+// Attendance routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('attendance/check-in', [AttendanceController::class, 'checkIn']);
+    Route::post('attendance/patrol-scan', [AttendanceController::class, 'patrolScan']);
+    Route::post('attendance/check-out', [AttendanceController::class, 'checkOut']);
+});
