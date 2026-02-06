@@ -16,6 +16,7 @@ class PatrolPoint extends Model
         'sequence_order',
         'latitude',
         'longitude',
+        'altitude',
         'radius',
     ];
 

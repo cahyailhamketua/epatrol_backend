@@ -27,6 +27,7 @@ class PatrolPointController extends Controller
                 'sequence_order' => 'required|integer|min:1',
                 'latitude' => 'required|numeric',
                 'longitude' => 'required|numeric',
+                'altitude' => 'nullable|numeric',
                 'radius' => 'nullable|integer|min:1',
             ]);
         } catch (ValidationException $e) {
@@ -71,6 +72,7 @@ class PatrolPointController extends Controller
                 'sequence_order' => 'sometimes|integer|min:1',
                 'latitude' => 'sometimes|numeric',
                 'longitude' => 'sometimes|numeric',
+                'altitude' => 'nullable|numeric',
                 'radius' => 'nullable|integer|min:1',
                 'regenerate_qr' => 'sometimes|boolean',
             ]);

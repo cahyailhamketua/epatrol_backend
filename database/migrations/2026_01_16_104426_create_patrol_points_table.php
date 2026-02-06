@@ -19,6 +19,7 @@ return new class extends Migration
             $table->integer('sequence_order');
             $table->decimal('latitude', 10, 7);
             $table->decimal('longitude', 10, 7);
+            $table->decimal('altitude', 10, 2)->nullable();
             $table->integer('radius')->default(5);
             $table->unique(['post_id', 'sequence_order']);
             $table->timestamps();

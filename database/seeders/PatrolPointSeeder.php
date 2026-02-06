@@ -17,6 +17,7 @@ class PatrolPointSeeder extends Seeder
                 'sequence_order' => 1,
                 'latitude' => -6.595038,
                 'longitude' => 106.816635,
+                'altitude' => 0,
                 'radius' => 5,
             ],
             [
@@ -26,6 +27,7 @@ class PatrolPointSeeder extends Seeder
                 'sequence_order' => 1,
                 'latitude' => -6.595100,
                 'longitude' => 106.816700,
+                'altitude' => 0,
                 'radius' => 5,
             ],
             [
@@ -35,6 +37,7 @@ class PatrolPointSeeder extends Seeder
                 'sequence_order' => 2,
                 'latitude' => -6.594900,
                 'longitude' => 106.816800,
+                'altitude' => 0,
                 'radius' => 5,
             ],
             [
@@ -44,6 +47,7 @@ class PatrolPointSeeder extends Seeder
                 'sequence_order' => 1,
                 'latitude' => -6.594900,
                 'longitude' => 106.816800,
+                'altitude' => 0,
                 'radius' => 5,
             ],
             [
@@ -53,6 +57,7 @@ class PatrolPointSeeder extends Seeder
                 'sequence_order' => 1,
                 'latitude' => -6.594900,
                 'longitude' => 106.816800,
+                'altitude' => 0,
                 'radius' => 5,
             ],
             [
@@ -62,6 +67,7 @@ class PatrolPointSeeder extends Seeder
                 'sequence_order' => 2,
                 'latitude' => -6.594900,
                 'longitude' => 106.816800,
+                'altitude' => 0,
                 'radius' => 5,
             ],
         ]);

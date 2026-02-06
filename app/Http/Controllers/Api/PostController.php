@@ -89,6 +89,7 @@ class PostController extends Controller
                 'patrol_points.*.sequence_order' => 'required|integer|min:1',
                 'patrol_points.*.latitude' => 'required|numeric',
                 'patrol_points.*.longitude' => 'required|numeric',
+                'patrol_points.*.altitude' => 'nullable|numeric',
                 'patrol_points.*.radius' => 'nullable|integer|min:1',
             ]);
         } catch (ValidationException $e) {
