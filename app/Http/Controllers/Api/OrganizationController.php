@@ -18,7 +18,7 @@ class OrganizationController extends Controller
         $this->authorize('viewAny', Organization::class);
 
         $organizations = Organization::query()
-            ->select('id', 'name', 'logo', 'code', 'phone', 'address', 'start_date', 'end_date', 'active')
+            ->select('id', 'name', 'logo', 'code', 'phone', 'email', 'address', 'start_date', 'end_date', 'active')
             ->when($request->has('active'), fn ($q) =>
                 $q->where('active', $request->boolean('active'))
             )
