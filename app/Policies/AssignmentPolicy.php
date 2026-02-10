@@ -9,9 +9,23 @@ use App\Models\Project;
 class AssignmentPolicy
 {
     /**
-     * LIST ASSIGNMENT
+     * LIST ASSIGNMENT (semua assignment)
      */
-    public function viewAny(User $user, Project $project): bool
+    public function viewAny(User $user): bool
+    {
+        return in_array($user->role, [
+            'dev',
+            'ho',
+            'admin_project',
+            'komandan_regu',
+            'anggota',
+        ]);
+    }
+
+    /**
+     * LIST ASSIGNMENT PER PROJECT
+     */
+    public function viewAnyByProject(User $user, Project $project): bool
     {
         // DEV bebas
         if ($user->role === 'dev') {

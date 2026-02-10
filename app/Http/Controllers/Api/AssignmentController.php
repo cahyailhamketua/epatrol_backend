@@ -12,31 +12,40 @@ use Illuminate\Validation\ValidationException;
 class AssignmentController extends Controller
 {
     /**
-     * LIST assignment (global, filter by project)
-     * GET /assignments?project_id={project}
+     * LIST assignment (semua assignment)
+     * GET /assignments
      * Data mengikuti indexByProject()
      */
     public function index(Request $request)
     {
-        $validated = $request->validate([
-            'project_id' => 'required|exists:projects,id',
-        ]);
-
-        $project = Project::findOrFail($validated['project_id']);
-
         // Authorization via AssignmentPolicy@viewAny
-        $this->authorize('viewAny', [Assignment::class, $project]);
+        $this->authorize('viewAny', Assignment::class);
 
-        $assignments = $project->assignments()
-            ->select(
-                'id',
-                'project_id',
-                'name',
-                'code',
-                'start_time',
-                'end_time',
-                'grace_period'
-            )
+        $user = $request->user();
+
+        $query = Assignment::select(
+            'id',
+            'project_id',
+            'name',
+            'code',
+            'start_time',
+            'end_time',
+            'grace_period'
+        );
+
+        // 🔒 Role terbatas → hanya project dia
+        if (in_array($user->role, ['anggota', 'komandan_regu', 'admin_project'])) {
+            $query->where('project_id', $user->project_id);
+        }
+
+        // 🔒 HO → semua project dalam organization dia
+        if ($user->role === 'ho') {
+            $query->whereHas('project', function ($q) use ($user) {
+                $q->where('organization_id', $user->organization_id);
+            });
+        }
+
+        $assignments = $query
             ->orderBy('start_time')
             ->get();
 
@@ -61,8 +70,8 @@ class AssignmentController extends Controller
             ]);
         }
 
-        // Authorization via AssignmentPolicy@viewAny
-        $this->authorize('viewAny', [Assignment::class, $project]);
+        // Authorization via AssignmentPolicy@viewAnyByProject
+        $this->authorize('viewAnyByProject', [Assignment::class, $project]);
 
         $assignments = Assignment::whereHas('project', function ($q) use ($organization) {
                 $q->where('organization_id', $organization->id);
@@ -90,7 +99,7 @@ class AssignmentController extends Controller
      */
     public function indexByProject(Project $project)
     {
-        $this->authorize('viewAny', $project);
+        $this->authorize('viewAnyByProject', [Assignment::class, $project]);
 
         $assignments = $project->assignments()
             ->select(
