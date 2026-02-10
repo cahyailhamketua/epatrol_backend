@@ -79,7 +79,8 @@ Route::middleware('auth:sanctum')->group(function () {
 
 // assignment routes
 Route::middleware('auth:sanctum')->group(function () {
-    Route::get('/projects/{project}/assignments', [AssignmentController::class, 'index']);
+    Route::get('/assignments', [AssignmentController::class, 'index']);
+    Route::get('/projects/{project}/assignments', [AssignmentController::class, 'indexByProject']);
     Route::post('/projects/{project}/assignments', [AssignmentController::class, 'store']);
     
     Route::get('/assignments/{assignment}', [AssignmentController::class, 'show']);
