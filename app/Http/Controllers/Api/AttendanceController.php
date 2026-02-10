@@ -119,15 +119,29 @@ class AttendanceController extends Controller
         }
 
         // GUARD 2: Wajib punya schedule hari ini
+        // ========== EFFICIENT DATA LOADING PATTERN ==========
+        // SINGLE Query dengan Eager Load: Schedule + Assignment + Post + Project
+        // Ini lebih efisien daripada query terpisah (1 query vs 4+ queries)
+        // Dari Schedule kita dapat:
+        //   - assignment.code (P/M/O)  
+        //   - assignment.start_time, end_time, grace_period
+        //   - post.name, post.type (mobile/static)
+        //   - post.latitude, post.longitude (jika mobile post)
+        //   - project.location_latitude, location_longitude (reference point)
+        //   - project.radius (geofence radius)
         $schedule = Schedule::where('user_id', $user->id)
             ->where('date', $today)
             ->with('assignment', 'post', 'project')
             ->first();
 
         if (!$schedule) {
-            return response()->json(['message' => 'Anda tidak memiliki jadwal hari ini.'], 403);
+            return response()->json([
+                'message' => 'Anda tidak memiliki jadwal hari ini.',
+                'date' => $today->format('Y-m-d'),
+            ], 403);
         }
 
+        // Unpack semua data dari single schedule query
         $assignment = $schedule->assignment;
         $post = $schedule->post;
         $project = $schedule->project;
@@ -168,24 +182,30 @@ class AttendanceController extends Controller
         }
 
         // ========== LOCATION VERIFICATION ==========
-        // Project location: Tersimpan di database saat setup project
-        // Device location: Dikirim dari HP/Laptop user saat check-in
-        // Kalkulasi: Jarak antara project location dan device location harus <= radius
+        // Reference location: Diambil dari project (fixed office location)
+        // Device location: Dikirim dari HP/Laptop user saat check-in (dynamic)
+        // Kalkulasi: Jarak antara reference location dan device location harus <= radius
+        // 
+        // Location logic:
+        // - PROJECT location: Fixed reference point (dari database)
+        // - POST type: Determine jika ada special location rules (mobile/static)
+        // - DEVICE location: Current user position dari HP/request
         
         $globalRadius = $project->radius ?? 100; // Radius project (default 100m)
         
-        // DEVICE location (dari HP/Laptop user)
+        // DEVICE location (dari HP/Laptop user saat check-in)
         $deviceLatitude = $request->latitude;
         $deviceLongitude = $request->longitude;
         
-        // PROJECT location (dari database)
-        $projectLatitude = $project->latitude;
-        $projectLongitude = $project->longitude;
+        // REFERENCE location: Coming from PROJECT (fixed office location)
+        $referenceLatitude = $project->location_latitude;
+        $referenceLongitude = $project->location_longitude;
+        $locationType = 'project'; // Always project location
         
         // Hitung jarak menggunakan Haversine formula
         $distance = $this->calculateDistance(
-            $projectLatitude,
-            $projectLongitude,
+            $referenceLatitude,
+            $referenceLongitude,
             $deviceLatitude,
             $deviceLongitude
         );
@@ -197,9 +217,10 @@ class AttendanceController extends Controller
                     'latitude' => round($deviceLatitude, 6),
                     'longitude' => round($deviceLongitude, 6),
                 ],
-                'project_location' => [
-                    'latitude' => round($projectLatitude, 6),
-                    'longitude' => round($projectLongitude, 6),
+                'reference_location' => [
+                    'type' => $locationType,
+                    'latitude' => round($referenceLatitude, 6),
+                    'longitude' => round($referenceLongitude, 6),
                 ],
                 'distance' => round($distance, 2) . ' meters',
                 'allowed_radius' => $globalRadius . ' meters',
@@ -262,6 +283,8 @@ class AttendanceController extends Controller
             'check_in_at' => $now,
             'checkin_lat' => $request->latitude,
             'checkin_lng' => $request->longitude,
+            'reference_lat' => $referenceLatitude,
+            'reference_lng' => $referenceLongitude,
             'attendance_status' => $attendanceStatus,
             'computed_status' => $computedStatus,
             'late_minutes' => $lateMinutes,
@@ -399,7 +422,49 @@ class AttendanceController extends Controller
 
         $assignment = $attendance->assignment;
         $post = $attendance->post;
+        $project = $attendance->project;
         $now = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time); // DEVICE TIME
+
+        // ========== LOCATION VERIFICATION for CHECK-OUT ==========
+        // Same reference location logic as check-in
+        $globalRadius = $project->radius ?? 100;
+        
+        $deviceLatitude = $request->latitude;
+        $deviceLongitude = $request->longitude;
+        
+        // REFERENCE location: Prioritas Assignment > Post > Project
+        $referenceLatitude = null;
+        $referenceLongitude = null;
+        
+        if ($assignment->latitude && $assignment->longitude) {
+            $referenceLatitude = $assignment->latitude;
+            $referenceLongitude = $assignment->longitude;
+        } elseif ($post && $post->latitude && $post->longitude) {
+            $referenceLatitude = $post->latitude;
+            $referenceLongitude = $post->longitude;
+        } else {
+            $referenceLatitude = $project->location_latitude;
+            $referenceLongitude = $project->location_longitude;
+        }
+        
+        $distance = $this->calculateDistance(
+            $referenceLatitude,
+            $referenceLongitude,
+            $deviceLatitude,
+            $deviceLongitude
+        );
+
+        if ($distance > $globalRadius) {
+            return response()->json([
+                'message' => 'Anda berada di luar radius absen pulang.',
+                'your_location' => [
+                    'latitude' => round($deviceLatitude, 6),
+                    'longitude' => round($deviceLongitude, 6),
+                ],
+                'distance' => round($distance, 2) . ' meters',
+                'allowed_radius' => $globalRadius . ' meters',
+            ], 403);
+        }
 
         // Tentukan end_time (bisa dari overtime atau assignment)
         if ($assignment->isOffDuty()) {
@@ -508,34 +573,47 @@ class AttendanceController extends Controller
     }
 
     /**
-     * Format attendance response dengan assignment details
+     * Format attendance response dengan assignment & post details
+     * Response include semua info dari single schedule query:
+     * - Assignment code (P/M/O), timing (start/end/grace_period)
+     * - Post name dan type (mobile/static) untuk validation
+     * - Status calculation (HADIR, HADIR TELAT, HADIR LEMBUR)
      */
     private function formatAttendanceResponse(Attendance $attendance)
     {
+        $post = $attendance->post;
+        $assignment = $attendance->assignment;
+        
         return [
             'id' => $attendance->id,
             'user_id' => $attendance->user_id,
             'date' => $attendance->date->format('Y-m-d'),
-            'assignment' => [
-                'code' => $attendance->assignment->code,
-                'name' => $attendance->assignment->name,
-                'start_time' => $attendance->assignment->start_time,
-                'end_time' => $attendance->assignment->end_time,
-                'grace_period' => $attendance->assignment->grace_period,
-                'is_off_duty' => $attendance->assignment->isOffDuty(),
+            'schedule' => [
+                'assignment' => [
+                    'code' => $assignment->code,  // P (Pagi), M (Malam), O (OFF)
+                    'name' => $assignment->name,
+                    'start_time' => $assignment->start_time,
+                    'end_time' => $assignment->end_time,
+                    'grace_period' => $assignment->grace_period . ' minutes',
+                    'is_off_duty' => $assignment->isOffDuty(),
+                ],
+                'post' => [
+                    'id' => $post->id,
+                    'name' => $post->name,      // Pos Gate, Pos Utama, Patroli Mobile
+                    'type' => $post->type,      // static atau mobile
+                ],
             ],
-            'post' => [
-                'id' => $attendance->post->id,
-                'name' => $attendance->post->name,
-                'type' => $attendance->post->type,
+            'timing' => [
+                'check_in_at' => $attendance->check_in_at?->format('H:i:s'),
+                'check_out_at' => $attendance->check_out_at?->format('H:i:s'),
+                'late_minutes' => $attendance->late_minutes,
+                'overtime_minutes' => $attendance->overtime_minutes,
             ],
-            'check_in_at' => $attendance->check_in_at?->format('H:i:s'),
-            'check_out_at' => $attendance->check_out_at?->format('H:i:s'),
-            'attendance_status' => $attendance->attendance_status,
-            'computed_status' => $attendance->computed_status,
-            'late_minutes' => $attendance->late_minutes,
-            'overtime_minutes' => $attendance->overtime_minutes,
-            'overtime_status' => $attendance->overtime_status,
+            'status' => [
+                'attendance_status' => $attendance->attendance_status,
+                'computed_status' => $attendance->computed_status,  // HADIR | HADIR TELAT | HADIR LEMBUR | HADIR TELAT LEMBUR
+                'overtime_status' => $attendance->overtime_status,  // NONE | PENDING | APPROVED
+            ],
             'can_attend' => $this->getCanAttend($attendance),
         ];
     }
