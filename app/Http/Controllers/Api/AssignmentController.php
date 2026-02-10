@@ -11,10 +11,44 @@ use Illuminate\Validation\ValidationException;
 class AssignmentController extends Controller
 {
     /**
+     * LIST assignment (global, filter by project)
+     * GET /assignments?project_id={project}
+     * Data mengikuti indexByProject()
+     */
+    public function index(Request $request)
+    {
+        $validated = $request->validate([
+            'project_id' => 'required|exists:projects,id',
+        ]);
+
+        $project = Project::findOrFail($validated['project_id']);
+
+        // Authorization via AssignmentPolicy@viewAny
+        $this->authorize('viewAny', [Assignment::class, $project]);
+
+        $assignments = $project->assignments()
+            ->select(
+                'id',
+                'project_id',
+                'name',
+                'code',
+                'start_time',
+                'end_time',
+                'grace_period'
+            )
+            ->orderBy('start_time')
+            ->get();
+
+        return response()->json([
+            'data' => $assignments,
+        ]);
+    }
+
+    /**
      * LIST assignment PER PROJECT
      * GET /projects/{project}/assignments
      */
-    public function index(Project $project)
+    public function indexByProject(Project $project)
     {
         $this->authorize('viewAny', $project);
 
