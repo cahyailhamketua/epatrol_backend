@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Post;
 use App\Models\Project;
+use App\Models\Organization;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
@@ -37,6 +38,71 @@ class PostController extends Controller
 
         /**
          * OPTIONAL FILTER BY TYPE
+         */
+        if ($request->filled('type')) {
+            $request->validate([
+                'type' => 'in:static,mobile'
+            ]);
+
+            $query->where('type', $request->type);
+        }
+
+        $posts = $query
+            ->orderBy('name')
+            ->paginate($request->get('per_page', 15));
+
+        $posts->getCollection()->transform(function ($post) {
+            $post->patrolPoints->transform(function ($patrolPoint) {
+                if ($patrolPoint->qrCode) {
+                    $qrCode = QrCode::format('svg')->size(200)->generate($patrolPoint->qrCode->code);
+                    $patrolPoint->qr_code_image = 'data:image/svg+xml;base64,' . base64_encode($qrCode);
+                } else {
+                    $patrolPoint->qr_code_image = null; // Or a default image
+                }
+                return $patrolPoint;
+            });
+            return $post;
+        });
+
+        return response()->json($posts);
+    }
+
+    /**
+     * LIST POST PER ORGANIZATION
+     * GET /organizations/{organization}/posts
+     *
+     * Data & otorisasi mengikuti method index()
+     */
+    public function indexByOrganization(Request $request, Organization $organization)
+    {
+        $this->authorize('viewAny', Post::class);
+
+        $user = $request->user();
+
+        $query = Post::with(['patrolPoints.qrCode'])
+            ->select('id', 'project_id', 'name', 'type')
+            ->orderBy('name');
+
+        // 🔒 Role terbatas → hanya project dia
+        if (in_array($user->role, ['anggota', 'komandan_regu', 'admin_project'])) {
+            $query->where('project_id', $user->project_id);
+        }
+
+        // 🔒 HO → semua project dalam organization dia
+        if ($user->role === 'ho') {
+            $query->whereHas('project', function ($q) use ($user) {
+                $q->where('organization_id', $user->organization_id);
+            });
+        }
+
+        // 🔍 Filter berdasarkan organization dari route
+        $query->whereHas('project', function ($q) use ($organization) {
+            $q->where('organization_id', $organization->id);
+        });
+
+        /**
+         * OPTIONAL FILTER BY TYPE
+         * Mengikuti index()
          */
         if ($request->filled('type')) {
             $request->validate([
