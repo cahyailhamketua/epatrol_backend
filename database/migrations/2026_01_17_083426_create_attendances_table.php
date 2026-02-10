@@ -30,8 +30,13 @@ return new class extends Migration
             $table->decimal('checkout_lng', 10, 7)->nullable();
         
             $table->string('attendance_status')->nullable();
+            $table->string('computed_status')->default('HADIR');
         
             $table->integer('late_minutes')->nullable();
+            $table->integer('overtime_minutes')->default(0);
+            $table->enum('overtime_status', ['NONE', 'PENDING', 'APPROVED'])->default('NONE');
+            
+            $table->string('selfie_photo_path')->nullable();
         
             $table->timestamps();
         });

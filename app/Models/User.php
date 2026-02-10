@@ -81,4 +81,34 @@ class User extends Authenticatable
         {
             return $this->hasMany(Attendance::class);
         }
+
+        public function absences()
+        {
+            return $this->hasMany(Absence::class);
+        }
+
+        public function overtimeLogs()
+        {
+            return $this->hasMany(OvertimeLog::class);
+        }
+
+        public function payrollDetails()
+        {
+            return $this->hasMany(PayrollDetail::class);
+        }
+
+        public function approvedAbsences()
+        {
+            return $this->hasMany(Absence::class, 'approved_by');
+        }
+
+        public function approvedOvertimeLogs()
+        {
+            return $this->hasMany(OvertimeLog::class, 'approved_by');
+        }
+
+        public function approvedPayrollRuns()
+        {
+            return $this->hasMany(PayrollRun::class, 'finalized_by');
+        }
 }

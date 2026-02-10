@@ -16,6 +16,7 @@ class Assignment extends Model
         'start_time',
         'end_time',
         'grace_period',
+        'is_off',
     ];
 
     public function project()
@@ -36,5 +37,58 @@ class Assignment extends Model
     public function activityTimes()
     {
         return $this->hasMany(ActivityAssignmentTime::class);
+    }
+
+    public function absences()
+    {
+        return $this->hasMany(Absence::class);
+    }
+
+    public function overtimeLogs()
+    {
+        return $this->hasMany(OvertimeLog::class);
+    }
+
+    public function payrollDetails()
+    {
+        return $this->hasMany(PayrollDetail::class);
+    }
+
+    // Scopes
+    public function scopeOff($query)
+    {
+        return $query->where('is_off', 1);
+    }
+
+    public function scopeActive($query)
+    {
+        return $query->where('is_off', 0);
+    }
+
+    // Helpers
+    public function isVisible()
+    {
+        return !$this->is_off;
+    }
+
+    public function isOffDuty()
+    {
+        return $this->is_off || $this->code === 'O';
+    }
+
+    public function getDurationInMinutes()
+    {
+        if ($this->isOffDuty()) {
+            return null;
+        }
+
+        $start = \Carbon\Carbon::createFromFormat('H:i:s', $this->start_time);
+        $end = \Carbon\Carbon::createFromFormat('H:i:s', $this->end_time);
+        
+        if ($end->lessThanOrEqualTo($start)) {
+            $end->addDay();
+        }
+        
+        return $end->diffInMinutes($start);
     }
 }

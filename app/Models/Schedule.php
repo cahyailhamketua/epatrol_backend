@@ -41,4 +41,42 @@ class Schedule extends Model
     {
         return $this->hasOne(Attendance::class);
     }
+
+    public function absence()
+    {
+        return $this->hasOne(Absence::class);
+    }
+
+    public function overtimeLogs()
+    {
+        return $this->hasMany(OvertimeLog::class);
+    }
+
+    // Scopes
+    public function scopeByDate($query, $date)
+    {
+        return $query->where('date', $date);
+    }
+
+    public function scopeByUser($query, $userId)
+    {
+        return $query->where('user_id', $userId);
+    }
+
+    public function scopeInPeriod($query, $startDate, $endDate)
+    {
+        return $query->whereBetween('date', [$startDate, $endDate]);
+    }
+
+    // Helper to check status for a day
+    public function getFinalStatus()
+    {
+        if ($this->attendance) {
+            return $this->attendance->attendance_status;
+        }
+        if ($this->absence && $this->absence->status === 'APPROVED') {
+            return $this->absence->absence_type;
+        }
+        return 'ALPHA';
+    }
 }

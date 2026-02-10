@@ -1,0 +1,591 @@
+{
+  "info": {
+    "name": "Attendance & Payroll API",
+    "description": "API documentation for Attendance, Absence, Overtime, and Payroll Management System",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000/api",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "your_bearer_token_here",
+      "type": "string"
+    },
+    {
+      "key": "project_id",
+      "value": "1",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "ABSENCES",
+      "item": [
+        {
+          "name": "Create Absence",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1,\n  \"user_id\": 5,\n  \"schedule_id\": 120,\n  \"assignment_id\": 3,\n  \"date\": \"2026-02-10\",\n  \"absence_type\": \"SAKIT\",\n  \"attachment_url\": \"https://drive.google.com/file/d/...\",\n  \"notes\": \"Demam tinggi, ada surat dokter\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/absences",
+              "host": ["{{base_url}}"],
+              "path": ["absences"]
+            }
+          }
+        },
+        {
+          "name": "Get Absences List",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/absences?project_id=1&status=PENDING&page=1",
+              "host": ["{{base_url}}"],
+              "path": ["absences"],
+              "query": [
+                {
+                  "key": "project_id",
+                  "value": "1"
+                },
+                {
+                  "key": "status",
+                  "value": "PENDING",
+                  "description": "PENDING, APPROVED, REJECTED"
+                },
+                {
+                  "key": "user_id",
+                  "value": "5",
+                  "disabled": true
+                },
+                {
+                  "key": "date",
+                  "value": "2026-02-10",
+                  "disabled": true
+                },
+                {
+                  "key": "page",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Approve Absence",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approved_by\": 1,\n  \"notes\": \"Approved, recovery yang baik\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/absences/1/approve",
+              "host": ["{{base_url}}"],
+              "path": ["absences", "1", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Reject Absence",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rejection_reason\": \"Belum ada surat dokter dari rumah sakit\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/absences/1/reject",
+              "host": ["{{base_url}}"],
+              "path": ["absences", "1", "reject"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "OVERTIME LOGS",
+      "item": [
+        {
+          "name": "Create Overtime Request",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1,\n  \"user_id\": 5,\n  \"assignment_id\": 3,\n  \"schedule_id\": 120,\n  \"date\": \"2026-02-10\",\n  \"overtime_type\": \"EXTEND_SHIFT\",\n  \"planned_start_time\": \"17:00:00\",\n  \"planned_end_time\": \"20:00:00\",\n  \"status\": \"APPROVED\",\n  \"approved_by\": 1,\n  \"notes\": \"Shift extension due to emergency\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/overtime-logs",
+              "host": ["{{base_url}}"],
+              "path": ["overtime-logs"]
+            }
+          }
+        },
+        {
+          "name": "Create OFF_DUTY Overtime",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1,\n  \"user_id\": 5,\n  \"assignment_id\": 3,\n  \"schedule_id\": 120,\n  \"date\": \"2026-02-15\",\n  \"overtime_type\": \"OFF_DUTY\",\n  \"planned_start_time\": \"08:00:00\",\n  \"planned_end_time\": \"17:00:00\",\n  \"status\": \"APPROVED\",\n  \"approved_by\": 1,\n  \"notes\": \"Called in on day off\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/overtime-logs",
+              "host": ["{{base_url}}"],
+              "path": ["overtime-logs"]
+            }
+          }
+        },
+        {
+          "name": "Get Overtime Logs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/overtime-logs?project_id=1&status=APPROVED&month=2&year=2026",
+              "host": ["{{base_url}}"],
+              "path": ["overtime-logs"],
+              "query": [
+                {
+                  "key": "project_id",
+                  "value": "1"
+                },
+                {
+                  "key": "status",
+                  "value": "APPROVED",
+                  "description": "PENDING, APPROVED, REJECTED, COMPLETED"
+                },
+                {
+                  "key": "month",
+                  "value": "2"
+                },
+                {
+                  "key": "year",
+                  "value": "2026"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Approve Overtime",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"approved_by\": 1\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/overtime-logs/1/approve",
+              "host": ["{{base_url}}"],
+              "path": ["overtime-logs", "1", "approve"]
+            }
+          }
+        },
+        {
+          "name": "Complete Overtime",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"actual_start_time\": \"17:05:00\",\n  \"actual_end_time\": \"20:00:00\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/overtime-logs/1/complete",
+              "host": ["{{base_url}}"],
+              "path": ["overtime-logs", "1", "complete"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "PAYROLL POLICIES",
+      "item": [
+        {
+          "name": "Create Payroll Policy",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1,\n  \"policy_code\": \"SECURITY_2026_Q1\",\n  \"policy_name\": \"Security Payroll Q1 2026\",\n  \"description\": \"Kebijakan gaji untuk security Q1 2026\",\n  \"effective_from\": \"2026-01-01\",\n  \"effective_to\": \"2026-03-31\",\n  \"daily_rate\": 150000,\n  \"hourly_rate\": 18750,\n  \"late_deduction_per_minute\": 1500,\n  \"late_minimum_minutes\": 5,\n  \"absence_deduction_amount\": 100000,\n  \"alpha_deduction_amount\": 150000,\n  \"overtime_rate_percent\": 150,\n  \"daily_allowance\": 25000,\n  \"perfect_attendance_bonus\": 300000,\n  \"status\": \"ACTIVE\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payroll-policies",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-policies"]
+            }
+          }
+        },
+        {
+          "name": "Get Payroll Policies",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/payroll-policies?project_id=1&status=ACTIVE",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-policies"],
+              "query": [
+                {
+                  "key": "project_id",
+                  "value": "1"
+                },
+                {
+                  "key": "status",
+                  "value": "ACTIVE",
+                  "description": "ACTIVE, INACTIVE"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "PAYROLL RUNS",
+      "item": [
+        {
+          "name": "Create Payroll Run",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"project_id\": 1,\n  \"payroll_policy_id\": 1,\n  \"year\": 2026,\n  \"month\": 2,\n  \"pay_period_start\": \"2026-02-01\",\n  \"pay_period_end\": \"2026-02-28\",\n  \"notes\": \"Payroll Februari 2026 - Pre-Holiday\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payroll-runs",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-runs"]
+            }
+          }
+        },
+        {
+          "name": "Get Payroll Runs",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/payroll-runs?project_id=1&status=DRAFT",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-runs"],
+              "query": [
+                {
+                  "key": "project_id",
+                  "value": "1"
+                },
+                {
+                  "key": "status",
+                  "value": "DRAFT",
+                  "description": "DRAFT, FINALIZED, PAID, CANCELLED"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Calculate Payroll",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/payroll-runs/1/calculate",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-runs", "1", "calculate"]
+            }
+          }
+        },
+        {
+          "name": "Finalize Payroll",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"finalized_by\": 1,\n  \"notes\": \"Final approval - siap bayar\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payroll-runs/1/finalize",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-runs", "1", "finalize"]
+            }
+          }
+        },
+        {
+          "name": "Mark Payroll as Paid",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "type": "text"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paid_date\": \"2026-03-05\",\n  \"notes\": \"Sudah transfer ke semua rekening\"\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/payroll-runs/1/mark-paid",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-runs", "1", "mark-paid"]
+            }
+          }
+        },
+        {
+          "name": "Recalculate Payroll",
+          "request": {
+            "method": "PATCH",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/payroll-runs/1/recalculate",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-runs", "1", "recalculate"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "PAYROLL DETAILS",
+      "item": [
+        {
+          "name": "Get Payroll Details List",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/payroll-details?payroll_run_id=1&project_id=1",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-details"],
+              "query": [
+                {
+                  "key": "payroll_run_id",
+                  "value": "1"
+                },
+                {
+                  "key": "user_id",
+                  "value": "5",
+                  "disabled": true
+                },
+                {
+                  "key": "project_id",
+                  "value": "1"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Get Payroll Detail (User)",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/payroll-details/101",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-details", "101"]
+            }
+          }
+        },
+        {
+          "name": "Export Payroll Detail",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}",
+                "type": "text"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/payroll-details/101/export",
+              "host": ["{{base_url}}"],
+              "path": ["payroll-details", "101", "export"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

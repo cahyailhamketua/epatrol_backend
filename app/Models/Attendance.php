@@ -23,7 +23,11 @@ class Attendance extends Model
         'checkout_lat',
         'checkout_lng',
         'attendance_status',
+        'computed_status',
         'late_minutes',
+        'overtime_minutes',
+        'overtime_status',
+        'selfie_photo_path',
     ];
 
     protected $casts = [
@@ -60,5 +64,37 @@ class Attendance extends Model
     public function patrolScans()
     {
         return $this->hasMany(PatrolScan::class);
+    }
+
+    public function overtimeLog()
+    {
+        return $this->belongsTo(OvertimeLog::class, 'schedule_id', 'schedule_id')
+                    ->whereDate('date', $this->date);
+    }
+
+    // Scopes
+    public function scopePresent($query)
+    {
+        return $query->where('attendance_status', 'HADIR')->orWhere('attendance_status', 'HADIR TELAT');
+    }
+
+    public function scopeLate($query)
+    {
+        return $query->where('attendance_status', 'HADIR TELAT');
+    }
+
+    public function scopeByDate($query, $date)
+    {
+        return $query->where('date', $date);
+    }
+
+    public function scopeByUser($query, $userId)
+    {
+        return $query->where('user_id', $userId);
+    }
+
+    public function scopeInPeriod($query, $startDate, $endDate)
+    {
+        return $query->whereBetween('date', [$startDate, $endDate]);
     }
 }

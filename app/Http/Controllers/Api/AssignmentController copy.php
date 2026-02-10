@@ -24,7 +24,6 @@ class AssignmentController extends Controller
                 'project_id',
                 'name',
                 'code',
-                'is_off',
                 'start_time',
                 'end_time',
                 'grace_period'
@@ -49,7 +48,6 @@ class AssignmentController extends Controller
             $validated = $request->validate([
                 'name'         => 'required|string|max:100',
                 'code'         => 'required|string|max:50',
-                'is_off'       => 'sometimes|boolean',
                 'start_time'   => 'required|date_format:H:i',
                 'end_time'     => 'required|date_format:H:i',
                 'grace_period' => 'nullable|integer|min:0',
@@ -96,7 +94,6 @@ class AssignmentController extends Controller
             $validated = $request->validate([
                 'name'         => 'sometimes|string|max:100',
                 'code'         => 'sometimes|string|max:50',
-                'is_off'       => 'sometimes|boolean',
                 'start_time'   => 'sometimes|date_format:H:i',
                 'end_time'     => 'sometimes|date_format:H:i',
                 'grace_period' => 'sometimes|integer|min:0',

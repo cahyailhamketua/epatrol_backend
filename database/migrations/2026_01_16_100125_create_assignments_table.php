@@ -16,7 +16,8 @@ return new class extends Migration
             $table->foreignId('project_id')->constrained()->cascadeOnDelete();
             
             $table->string('name');
-            $table->string('code'); 
+            $table->string('code');
+            $table->boolean('is_off')->default(0);
             $table->time('start_time');
             $table->time('end_time');
             $table->integer('grace_period')->default(15);
