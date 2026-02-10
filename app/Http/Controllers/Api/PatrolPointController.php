@@ -56,6 +56,19 @@ class PatrolPointController extends Controller
     }
 
     /**
+     * SHOW PATROL POINT
+     * GET /patrol-points/{patrolPoint}
+     */
+    public function show(PatrolPoint $patrolPoint)
+    {
+        $this->authorize('view', $patrolPoint);
+
+        return response()->json([
+            'data' => $patrolPoint->load('qrCode'),
+        ]);
+    }
+
+    /**
      * UPDATE PATROL POINT
      * PUT /patrol-points/{patrolPoint}
      */
