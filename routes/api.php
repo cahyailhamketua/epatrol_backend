@@ -50,6 +50,8 @@ Route::middleware('auth:sanctum')->group(function () {
     //project by organization
     Route::get('/organizations/{organization}/projects', [ProjectController::class, 'projectsByOrganization']
     );
+    // assignments by organization
+    Route::get('/organizations/{organization}/assignments', [AssignmentController::class, 'indexByOrganization']);
 });
 
 // project routes

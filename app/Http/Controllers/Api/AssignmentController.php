@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Project;     
 use App\Models\Assignment;
+use App\Models\Organization;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
@@ -27,6 +28,45 @@ class AssignmentController extends Controller
         $this->authorize('viewAny', [Assignment::class, $project]);
 
         $assignments = $project->assignments()
+            ->select(
+                'id',
+                'project_id',
+                'name',
+                'code',
+                'start_time',
+                'end_time',
+                'grace_period'
+            )
+            ->orderBy('start_time')
+            ->get();
+
+        return response()->json([
+            'data' => $assignments,
+        ]);
+    }
+
+    /**
+     * LIST assignment PER ORGANIZATION
+     * GET /organizations/{organization}/assignments
+     * Data mengikuti indexByProject()
+     */
+    public function indexByOrganization(Organization $organization)
+    {
+        // Ambil project pertama dari organization untuk authorization
+        $project = $organization->projects()->first();
+        
+        if (!$project) {
+            return response()->json([
+                'data' => [],
+            ]);
+        }
+
+        // Authorization via AssignmentPolicy@viewAny
+        $this->authorize('viewAny', [Assignment::class, $project]);
+
+        $assignments = Assignment::whereHas('project', function ($q) use ($organization) {
+                $q->where('organization_id', $organization->id);
+            })
             ->select(
                 'id',
                 'project_id',
