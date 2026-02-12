@@ -186,11 +186,12 @@ class ActivityController extends Controller
                     }
 
                     $assignmentGroups[$assignmentId]['items'][] = [
-                        'activity_id'   => $activity->id,
-                        'activity_name' => $activity->name,
-                        'location'      => $activity->location,
-                        'start_time'    => $time->start_time,
-                        'end_time'      => $time->end_time,
+                        'activity_assignment_time_id' => $time->id,
+                        'activity_id'                 => $activity->id,
+                        'activity_name'               => $activity->name,
+                        'location'                    => $activity->location,
+                        'start_time'                  => $time->start_time,
+                        'end_time'                    => $time->end_time,
                     ];
                 }
             }
