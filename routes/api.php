@@ -55,6 +55,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/organizations/{organization}/assignments', [AssignmentController::class, 'indexByOrganization']);
     // activities schedule by organization
     Route::get('/organizations/{organization}/activities/schedule', [ActivityController::class, 'scheduleByOrganization']);
+    // user by organization
+    Route::get('/organizations/{organization}/users', [OrganizationController::class, 'users']);
 });
 
 // project routes
@@ -123,8 +125,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/posts/{post}/activities', [ActivityController::class, 'index']);
     Route::get('/posts/{post}/activities/schedule', [ActivityController::class, 'scheduleByPost']);
     Route::post('/posts/{post}/activities', [ActivityController::class, 'store']);
+    Route::put('/posts/{post}/activities', [ActivityController::class, 'update']);
     
-    Route::put('/activities/{activity}', [ActivityController::class, 'update']);
+    Route::put('/activities/{activity}', [ActivityController::class, 'updateActivity']);
     Route::delete('/activities/{activity}', [ActivityController::class, 'destroy']);
 });
 

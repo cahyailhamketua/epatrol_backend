@@ -144,4 +144,34 @@ class OrganizationController extends Controller
             'message' => 'Organization activated',
         ]);
     }
+
+    /**
+     * USER BY ORGANIZATION
+     */
+    public function users(Organization $organization, Request $request)
+    {
+        $this->authorize('view', $organization);
+
+        $auth = $request->user();
+
+        $users = $organization->users()
+            ->select(
+                'id',
+                'full_name',
+                'username',
+                'email',
+                'role',
+                'project_id',
+                'organization_id',
+                'active'
+            )
+            ->when($auth->role !== 'dev', function ($q) {
+                // 🔐 selain dev hanya user aktif
+                $q->where('active', true);
+            })
+            ->orderBy('full_name')
+            ->paginate($request->get('per_page', 15));
+
+        return response()->json($users);
+    }
 }

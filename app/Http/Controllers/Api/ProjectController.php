@@ -170,6 +170,8 @@ class ProjectController extends Controller
     {
         $this->authorize('view', $project);
 
+        $auth = $request->user();
+
         $users = $project->users()
             ->select(
                 'id',
@@ -181,7 +183,10 @@ class ProjectController extends Controller
                 'organization_id',
                 'active'
             )
-            ->where('active', true) // 🔥 HANYA USER AKTIF
+            ->when($auth->role !== 'dev', function ($q) {
+                // 🔐 selain dev hanya boleh lihat user aktif
+                $q->where('active', true);
+            })
             ->orderBy('full_name')
             ->paginate($request->get('per_page', 15));
 
