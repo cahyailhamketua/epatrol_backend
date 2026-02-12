@@ -52,6 +52,8 @@ Route::middleware('auth:sanctum')->group(function () {
     );
     // assignments by organization
     Route::get('/organizations/{organization}/assignments', [AssignmentController::class, 'indexByOrganization']);
+    // activities schedule by organization
+    Route::get('/organizations/{organization}/activities/schedule', [ActivityController::class, 'scheduleByOrganization']);
 });
 
 // project routes
@@ -65,6 +67,8 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/projects/{project}/activate', [ProjectController::class, 'activate']);
     // user by project
     Route::get('/projects/{project}/users', [ProjectController::class, 'users']);
+    // activities schedule by project
+    Route::get('/projects/{project}/activities/schedule', [ActivityController::class, 'scheduleByProject']);
 });
 
 // shift routes
@@ -112,7 +116,11 @@ Route::middleware('auth:sanctum')->group(function () {
 
 // activity routes
 Route::middleware('auth:sanctum')->group(function () {
+    // All activities grouped by post & assignment
+    Route::get('/activities/schedule', [ActivityController::class, 'schedule']);
+
     Route::get('/posts/{post}/activities', [ActivityController::class, 'index']);
+    Route::get('/posts/{post}/activities/schedule', [ActivityController::class, 'scheduleByPost']);
     Route::post('/posts/{post}/activities', [ActivityController::class, 'store']);
     
     Route::put('/activities/{activity}', [ActivityController::class, 'update']);

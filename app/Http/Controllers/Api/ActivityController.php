@@ -5,12 +5,213 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Activity;
 use App\Models\Post;
+use App\Models\Assignment;
+use App\Models\Organization;
+use App\Models\Project;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 
 class ActivityController extends Controller
 {
+    /**
+     * LIST SEMUA ACTIVITY (DIKELOMPOKKAN BY POST → ASSIGNMENT)
+     * GET /activities/schedule
+     *
+     * Contoh struktur response:
+     * [
+     *   {
+     *     "post_id": 1,
+     *     "post_name": "Main Gate Security",
+     *     "project_id": 1,
+     *     "type": "static",
+     *     "assignments": [
+     *       {
+     *         "assignment_id": 10,
+     *         "assignment_name": "Morning Shift",
+     *         "items": [
+     *           {
+     *             "activity_id": 5,
+     *             "activity_name": "Shift start",
+     *             "location": "Main Gate",
+     *             "start_time": "06:00",
+     *             "end_time": "06:30"
+     *           },
+     *           ...
+     *         ]
+     *       },
+     *       ...
+     *     ]
+     *   }
+     * ]
+     */
+    public function schedule(Request $request)
+    {
+        $this->authorize('viewAny', Activity::class);
+
+        $user = $request->user();
+
+        $query = Post::with([
+                'activities.assignmentTimes.assignment',
+            ])
+            ->select('id', 'project_id', 'name', 'type');
+
+        // 🔒 Role terbatas → hanya project dia
+        if (in_array($user->role, ['anggota', 'komandan_regu', 'admin_project'])) {
+            $query->where('project_id', $user->project_id);
+        }
+
+        // 🔒 HO → semua project dalam organization dia
+        if ($user->role === 'ho') {
+            $query->whereHas('project', function ($q) use ($user) {
+                $q->where('organization_id', $user->organization_id);
+            });
+        }
+
+        $posts = $query
+            ->orderBy('name')
+            ->get();
+
+        $data = $this->formatScheduleData($posts);
+
+        return response()->json([
+            'data' => $data,
+        ]);
+    }
+
+    /**
+     * LIST ACTIVITY SCHEDULE BY ORGANIZATION
+     * GET /organizations/{organization}/activities/schedule
+     * Data format sama seperti /activities/schedule
+     */
+    public function scheduleByOrganization(Organization $organization)
+    {
+        $this->authorize('viewAny', Activity::class);
+
+        $query = Post::with([
+                'activities.assignmentTimes.assignment',
+            ])
+            ->select('id', 'project_id', 'name', 'type')
+            ->whereHas('project', function ($q) use ($organization) {
+                $q->where('organization_id', $organization->id);
+            });
+
+        $posts = $query
+            ->orderBy('name')
+            ->get();
+
+        $data = $this->formatScheduleData($posts);
+
+        return response()->json([
+            'data' => $data,
+        ]);
+    }
+
+    /**
+     * LIST ACTIVITY SCHEDULE BY PROJECT
+     * GET /projects/{project}/activities/schedule
+     * Data format sama seperti /activities/schedule
+     */
+    public function scheduleByProject(Project $project)
+    {
+        $this->authorize('viewAny', Activity::class);
+
+        $posts = Post::with([
+                'activities.assignmentTimes.assignment',
+            ])
+            ->select('id', 'project_id', 'name', 'type')
+            ->where('project_id', $project->id)
+            ->orderBy('name')
+            ->get();
+
+        $data = $this->formatScheduleData($posts);
+
+        return response()->json([
+            'data' => $data,
+        ]);
+    }
+
+    /**
+     * LIST ACTIVITY SCHEDULE BY POST
+     * GET /posts/{post}/activities/schedule
+     * Data format sama seperti /activities/schedule
+     */
+    public function scheduleByPost(Post $post)
+    {
+        $this->authorize('viewAny', Activity::class);
+
+        $posts = Post::with([
+                'activities.assignmentTimes.assignment',
+            ])
+            ->select('id', 'project_id', 'name', 'type')
+            ->where('id', $post->id)
+            ->orderBy('name')
+            ->get();
+
+        $data = $this->formatScheduleData($posts);
+
+        return response()->json([
+            'data' => $data,
+        ]);
+    }
+
+    /**
+     * Helper method untuk format schedule data
+     * Digunakan oleh schedule(), scheduleByOrganization(), scheduleByProject(), scheduleByPost()
+     */
+    private function formatScheduleData($posts)
+    {
+        return $posts->map(function (Post $post) {
+            $assignmentGroups = [];
+
+            foreach ($post->activities as $activity) {
+                if (!$activity->active) {
+                    continue;
+                }
+
+                foreach ($activity->assignmentTimes as $time) {
+                    $assignment = $time->assignment;
+                    if (!$assignment) {
+                        continue;
+                    }
+
+                    $assignmentId = $assignment->id;
+
+                    if (!isset($assignmentGroups[$assignmentId])) {
+                        $assignmentGroups[$assignmentId] = [
+                            'assignment_id'   => $assignment->id,
+                            'assignment_name' => $assignment->name,
+                            'items'           => [],
+                        ];
+                    }
+
+                    $assignmentGroups[$assignmentId]['items'][] = [
+                        'activity_id'   => $activity->id,
+                        'activity_name' => $activity->name,
+                        'location'      => $activity->location,
+                        'start_time'    => $time->start_time,
+                        'end_time'      => $time->end_time,
+                    ];
+                }
+            }
+
+            // Urutkan items per assignment berdasarkan start_time
+            foreach ($assignmentGroups as &$group) {
+                usort($group['items'], function ($a, $b) {
+                    return strcmp($a['start_time'], $b['start_time']);
+                });
+            }
+
+            return [
+                'post_id'    => $post->id,
+                'post_name'  => $post->name,
+                'project_id' => $post->project_id,
+                'type'       => $post->type,
+                'assignments'=> array_values($assignmentGroups),
+            ];
+        });
+    }
+
     /**
      * LIST ACTIVITY BY POST + assignment
      * GET /posts/{post}/activities?assignment_id=
