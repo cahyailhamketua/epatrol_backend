@@ -13,6 +13,7 @@ use App\Http\Controllers\Api\ActivityController;
 use App\Http\Controllers\Api\ActivityAssignmentTimeController;
 use App\Http\Controllers\Api\PatrolPointController;
 use App\Http\Controllers\Api\ScheduleController;
+use App\Http\Controllers\Api\AttendanceController;
 
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
@@ -174,7 +175,18 @@ Route::middleware('auth:sanctum')->group(function () {
 
 // Attendance routes
 Route::middleware('auth:sanctum')->group(function () {
-    Route::post('attendance/check-in', [AttendanceController::class, 'checkIn']);
-    Route::post('attendance/patrol-scan', [AttendanceController::class, 'patrolScan']);
-    Route::post('attendance/check-out', [AttendanceController::class, 'checkOut']);
+    // List attendances (dengan filter)
+    Route::get('/attendances', [AttendanceController::class, 'index']);
+    
+    // Check-in
+    Route::post('/attendances/check-in', [AttendanceController::class, 'checkIn']);
+    
+    // Patrol scan (mobile post)
+    Route::post('/attendances/patrol-scan', [AttendanceController::class, 'patrolScan']);
+    
+    // Check-out
+    Route::post('/attendances/check-out', [AttendanceController::class, 'checkOut']);
+    
+    // View attendance detail
+    Route::get('/attendances/{attendance}', [AttendanceController::class, 'show']);
 });
