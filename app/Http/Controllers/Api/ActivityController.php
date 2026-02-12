@@ -257,6 +257,64 @@ class ActivityController extends Controller
     {
         $this->authorize('manage', [Activity::class, $post->project]);
 
+        // Mode BULK (request berisi "activities": [...])
+        if ($request->has('activities')) {
+            try {
+                $validated = $request->validate([
+                    'activities' => 'required|array|min:1',
+                    'activities.*.name' => 'required|string|max:100',
+                    'activities.*.location' => 'required|string|max:100',
+                    'activities.*.active' => 'boolean',
+
+                    'activities.*.assignment_times' => 'required|array|min:1',
+                    'activities.*.assignment_times.*.assignment_id' => 'required|exists:assignments,id',
+                    'activities.*.assignment_times.*.start_time' => 'required|date_format:H:i',
+                    'activities.*.assignment_times.*.end_time' => 'required|date_format:H:i',
+                ]);
+            } catch (ValidationException $e) {
+                return response()->json([
+                    'success'     => false,
+                    'message'     => 'Validation failed',
+                    'status_code' => 422,
+                    'errors'      => $e->errors(),
+                ], 422);
+            }
+
+            $activities = DB::transaction(function () use ($validated, $post) {
+                $created = [];
+
+                foreach ($validated['activities'] as $activityData) {
+                    $activity = $post->activities()->create([
+                        'name'     => $activityData['name'],
+                        'location' => $activityData['location'],
+                        'active'   => $activityData['active'] ?? true,
+                    ]);
+
+                    foreach ($activityData['assignment_times'] as $timeData) {
+                        // Pastikan assignment berada pada project yang sama dengan post
+                        $assignment = Assignment::find($timeData['assignment_id']);
+                        if (!$assignment || $assignment->project_id !== $post->project_id) {
+                            throw ValidationException::withMessages([
+                                'activities' => ['Assignment tidak berada pada project yang sama dengan post.'],
+                            ]);
+                        }
+
+                        $activity->assignmentTimes()->create($timeData);
+                    }
+
+                    $created[] = $activity->load('assignmentTimes');
+                }
+
+                return $created;
+            });
+
+            return response()->json([
+                'message' => 'Activities created successfully',
+                'data'    => $activities,
+            ], 201);
+        }
+
+        // Mode SINGLE (kompatibel dengan struktur lama)
         try {
             $validated = $request->validate([
                 'name' => 'required|string|max:100',
@@ -285,6 +343,14 @@ class ActivityController extends Controller
             ]);
 
             foreach ($validated['assignment_times'] as $time) {
+                // Pastikan assignment berada pada project yang sama dengan post
+                $assignment = Assignment::find($time['assignment_id']);
+                if (!$assignment || $assignment->project_id !== $post->project_id) {
+                    throw ValidationException::withMessages([
+                        'assignment_times' => ['Assignment tidak berada pada project yang sama dengan post.'],
+                    ]);
+                }
+
                 $activity->assignmentTimes()->create($time);
             }
 
@@ -293,7 +359,7 @@ class ActivityController extends Controller
 
         return response()->json([
             'message' => 'Activity created successfully',
-            'data' => $activity->load('assignmentTimes'),
+            'data'    => $activity->load('assignmentTimes'),
         ], 201);
     }
 
