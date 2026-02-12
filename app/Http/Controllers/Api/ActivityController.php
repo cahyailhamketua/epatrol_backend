@@ -365,10 +365,188 @@ class ActivityController extends Controller
     }
 
     /**
-     * UPDATE ACTIVITY
+     * BULK UPDATE ACTIVITIES DALAM SATU POST (STATE-BASED SYNC)
+     * PUT /posts/{post}/activities
+     *
+     * Aturan:
+     * - activity.id ada   → UPDATE
+     * - activity.id null  → CREATE
+     * - activity lama yang tidak dikirim → DELETE
+     *
+     * Untuk assignment_times:
+     * - id ada    → UPDATE
+     * - id null   → CREATE
+     * - time lama yang tidak dikirim → DELETE
+     *
+     * Seluruh proses dibungkus DB::transaction
+     */
+    public function update(Request $request, Post $post)
+    {
+        // 🔒 Authorization
+        $this->authorize('manage', [Activity::class, $post->project]);
+
+        // ✅ Validasi input
+        try {
+            $validated = $request->validate([
+                'activities' => 'required|array',
+                'activities.*.id' => 'nullable|integer|exists:activities,id',
+
+                'activities.*.name'     => 'required|string|max:100',
+                'activities.*.location' => 'required|string|max:100',
+                'activities.*.active'   => 'boolean',
+
+                'activities.*.assignment_times' => 'required|array|min:1',
+                'activities.*.assignment_times.*.id' => 'nullable|integer|exists:activity_assignment_times,id',
+                'activities.*.assignment_times.*.assignment_id' => 'required|integer|exists:assignments,id',
+                'activities.*.assignment_times.*.start_time'    => 'required|date_format:H:i',
+                'activities.*.assignment_times.*.end_time'      => 'required|date_format:H:i|after:start_time',
+            ]);
+        } catch (ValidationException $e) {
+            return response()->json([
+                'success'     => false,
+                'message'     => 'Validation failed',
+                'status_code' => 422,
+                'errors'      => $e->errors(),
+            ], 422);
+        }
+
+        $activitiesPayload = collect($validated['activities']);
+
+        // 💾 Semua operasi dalam satu transaksi
+        $updatedActivities = DB::transaction(function () use ($activitiesPayload, $post) {
+            // Ambil semua activity existing milik post ini
+            $existingActivities = $post->activities()
+                ->with('assignmentTimes')
+                ->get()
+                ->keyBy('id');
+
+            // ID activity yang dikirim dari frontend (hanya yang punya id)
+            $incomingActivityIds = $activitiesPayload
+                ->pluck('id')
+                ->filter()
+                ->values()
+                ->all();
+
+            // Activity yang harus dihapus = ada di DB tapi tidak ada di payload
+            $activitiesToDelete = $existingActivities
+                ->whereNotIn('id', $incomingActivityIds);
+
+            foreach ($activitiesToDelete as $activity) {
+                // Hapus assignment_times dahulu (kalau tidak cascade)
+                $activity->assignmentTimes()->delete();
+                $activity->delete();
+            }
+
+            $result = collect();
+
+            // Loop semua activity dari payload (create + update)
+            foreach ($activitiesPayload as $activityData) {
+                $activityId = $activityData['id'] ?? null;
+
+                if ($activityId && $existingActivities->has($activityId)) {
+                    // 🔁 UPDATE ACTIVITY
+                    /** @var \App\Models\Activity $activity */
+                    $activity = $existingActivities->get($activityId);
+
+                    // Safety: pastikan activity benar‑benar milik post ini
+                    if ($activity->post_id !== $post->id) {
+                        throw ValidationException::withMessages([
+                            'activities' => ['Activity tidak milik post ini.'],
+                        ]);
+                    }
+
+                    $activity->update([
+                        'name'     => $activityData['name'],
+                        'location' => $activityData['location'],
+                        'active'   => $activityData['active'] ?? $activity->active,
+                    ]);
+                } else {
+                    // 🆕 CREATE ACTIVITY BARU
+                    $activity = $post->activities()->create([
+                        'name'     => $activityData['name'],
+                        'location' => $activityData['location'],
+                        'active'   => $activityData['active'] ?? true,
+                    ]);
+                }
+
+                // ====== SYNC ASSIGNMENT_TIMES UNTUK ACTIVITY INI ======
+                $existingTimes = $activity->assignmentTimes()
+                    ->get()
+                    ->keyBy('id');
+
+                $timesPayload = collect($activityData['assignment_times']);
+
+                $incomingTimeIds = $timesPayload
+                    ->pluck('id')
+                    ->filter()
+                    ->values()
+                    ->all();
+
+                // DELETE: time yang ada di DB tapi tidak dikirim
+                $timesToDelete = $existingTimes
+                    ->whereNotIn('id', $incomingTimeIds);
+
+                foreach ($timesToDelete as $time) {
+                    $time->delete();
+                }
+
+                // CREATE / UPDATE: loop semua times yang dikirim
+                foreach ($timesPayload as $timeData) {
+                    $timeId = $timeData['id'] ?? null;
+
+                    // Cek assignment belong ke project yang sama
+                    $assignment = Assignment::find($timeData['assignment_id']);
+                    if (!$assignment || $assignment->project_id !== $post->project_id) {
+                        throw ValidationException::withMessages([
+                            'activities' => ['Assignment tidak berada pada project yang sama dengan post.'],
+                        ]);
+                    }
+
+                    if ($timeId && $existingTimes->has($timeId)) {
+                        // 🔁 UPDATE assignment_time
+                        $time = $existingTimes->get($timeId);
+
+                        // Safety: pastikan time milik activity ini
+                        if ($time->activity_id !== $activity->id) {
+                            throw ValidationException::withMessages([
+                                'activities' => ['Activity assignment time tidak milik activity ini.'],
+                            ]);
+                        }
+
+                        $time->update([
+                            'assignment_id' => $timeData['assignment_id'],
+                            'start_time'    => $timeData['start_time'],
+                            'end_time'      => $timeData['end_time'],
+                        ]);
+                    } else {
+                        // 🆕 CREATE assignment_time BARU
+                        $activity->assignmentTimes()->create([
+                            'assignment_id' => $timeData['assignment_id'],
+                            'start_time'    => $timeData['start_time'],
+                            'end_time'      => $timeData['end_time'],
+                        ]);
+                    }
+                }
+
+                $result->push(
+                    $activity->load('assignmentTimes')
+                );
+            }
+
+            return $result->values();
+        });
+
+        return response()->json([
+            'message' => 'Activities updated successfully',
+            'data'    => $updatedActivities,
+        ], 200);
+    }
+
+    /**
+     * UPDATE ACTIVITY TUNGGAL
      * PUT /activities/{activity}
      */
-    public function update(Request $request, Activity $activity)
+    public function updateActivity(Request $request, Activity $activity)
     {
         $this->authorize('manage', [Activity::class, $activity->post->project]);
 
@@ -391,7 +569,7 @@ class ActivityController extends Controller
 
         return response()->json([
             'message' => 'Activity updated',
-            'data' => $activity,
+            'data'    => $activity,
         ]);
     }
 
