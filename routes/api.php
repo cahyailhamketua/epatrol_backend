@@ -111,6 +111,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
 // patrol point routes
 Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/posts/{post}/patrol-points', [PatrolPointController::class, 'indexByPost']);
     Route::post('/posts/{post}/patrol-points', [PatrolPointController::class, 'store']);
     Route::get('/patrol-points/{patrolPoint}', [PatrolPointController::class, 'show']);
     Route::put('/patrol-points/{patrolPoint}', [PatrolPointController::class, 'update']);
