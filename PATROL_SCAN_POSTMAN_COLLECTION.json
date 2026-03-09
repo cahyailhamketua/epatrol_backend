@@ -1,0 +1,798 @@
+{
+  "info": {
+    "_postman_id": "patrol-scan-collection",
+    "name": "Patrol Scan System - Complete Testing",
+    "description": "Complete testing collection untuk Patrol Scan System",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Authentication",
+      "item": [
+        {
+          "name": "Login as Member",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"member_user\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/login",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "login"
+              ]
+            }
+          }
+        },
+        {
+          "name": "Login as Commander",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"komandan_user\",\n  \"password\": \"password123\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/login",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "login"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Member Workflow - Check-In & Patrol Scan",
+      "item": [
+        {
+          "name": "2.1 Get Available Posts",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/api/posts/by-type/mobile",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "posts",
+                "by-type",
+                "mobile"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.2 Member Check-In",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "post_type",
+                  "value": "mobile",
+                  "type": "text"
+                },
+                {
+                  "key": "post_name",
+                  "value": "Gate Utama",
+                  "type": "text"
+                },
+                {
+                  "key": "latitude",
+                  "value": "-6.123456",
+                  "type": "text"
+                },
+                {
+                  "key": "longitude",
+                  "value": "106.789012",
+                  "type": "text"
+                },
+                {
+                  "key": "current_time",
+                  "value": "2026-02-23 10:00:00",
+                  "type": "text"
+                },
+                {
+                  "key": "selfie_photo",
+                  "type": "file",
+                  "src": "/path/to/selfie.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/attendances/check-in",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "attendances",
+                "check-in"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.3 Get Patrol Points Progress",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/api/attendance/{{ATTENDANCE_ID}}/patrol-scan/progress",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "attendance",
+                "{{ATTENDANCE_ID}}",
+                "patrol-scan",
+                "progress"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.4 Perform First Scan (Sequence 1)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendance_id\": {{ATTENDANCE_ID}},\n  \"qr_code\": \"{{QR_CODE_1}}\",\n  \"scan_latitude\": -6.123456,\n  \"scan_longitude\": 106.789012,\n  \"scan_altitude\": 25.5,\n  \"note\": \"Situasi aman, tidak ada kendala\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.5 Upload Photo for Scan 1",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "photo",
+                  "type": "file",
+                  "src": "/path/to/patrol_photo_1.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan/{{PATROL_SCAN_ID}}/photo",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan",
+                "{{PATROL_SCAN_ID}}",
+                "photo"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.6 Perform Second Scan (Sequence 2)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendance_id\": {{ATTENDANCE_ID}},\n  \"qr_code\": \"{{QR_CODE_2}}\",\n  \"scan_latitude\": -6.124567,\n  \"scan_longitude\": 106.790123,\n  \"scan_altitude\": 26.0,\n  \"note\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.7 Get Scan Statistics",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/api/attendance/{{ATTENDANCE_ID}}/patrol-scan/statistics",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "attendance",
+                "{{ATTENDANCE_ID}}",
+                "patrol-scan",
+                "statistics"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.8 Get All Scans for Attendance",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/api/attendance/{{ATTENDANCE_ID}}/patrol-scans",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "attendance",
+                "{{ATTENDANCE_ID}}",
+                "patrol-scans"
+              ]
+            }
+          }
+        },
+        {
+          "name": "2.9 Member Check-Out",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendance_id\": {{ATTENDANCE_ID}},\n  \"latitude\": -6.123456,\n  \"longitude\": 106.789012,\n  \"current_time\": \"2026-02-23 17:30:00\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/attendances/check-out",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "attendances",
+                "check-out"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Commander Workflow",
+      "item": [
+        {
+          "name": "3.1 Commander Check-In (No Post Selection)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{COMMANDER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "latitude",
+                  "value": "-6.123456",
+                  "type": "text"
+                },
+                {
+                  "key": "longitude",
+                  "value": "106.789012",
+                  "type": "text"
+                },
+                {
+                  "key": "current_time",
+                  "value": "2026-02-23 10:00:00",
+                  "type": "text"
+                },
+                {
+                  "key": "selfie_photo",
+                  "type": "file",
+                  "src": "/path/to/selfie.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/attendances/check-in",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "attendances",
+                "check-in"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.2 Get Static Patrol Point",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{COMMANDER_TOKEN}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/api/attendance/{{COMMANDER_ATTENDANCE_ID}}/patrol-scan/progress",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "attendance",
+                "{{COMMANDER_ATTENDANCE_ID}}",
+                "patrol-scan",
+                "progress"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.3 Commander Scan Static Point",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{COMMANDER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendance_id\": {{COMMANDER_ATTENDANCE_ID}},\n  \"qr_code\": \"{{STATIC_QR_CODE}}\",\n  \"scan_latitude\": -6.123456,\n  \"scan_longitude\": 106.789012,\n  \"note\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.4 Upload Photo",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{COMMANDER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "multipart/form-data"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "photo",
+                  "type": "file",
+                  "src": "/path/to/photo.jpg"
+                }
+              ]
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan/{{COMMANDER_SCAN_ID}}/photo",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan",
+                "{{COMMANDER_SCAN_ID}}",
+                "photo"
+              ]
+            }
+          }
+        },
+        {
+          "name": "3.5 Commander Check-Out",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{COMMANDER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendance_id\": {{COMMANDER_ATTENDANCE_ID}},\n  \"latitude\": -6.123456,\n  \"longitude\": 106.789012,\n  \"current_time\": \"2026-02-23 17:30:00\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/attendances/check-out",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "attendances",
+                "check-out"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "4. Error Scenarios",
+      "item": [
+        {
+          "name": "4.1 Try Scanning Out of Sequence",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendance_id\": {{ATTENDANCE_ID}},\n  \"qr_code\": \"{{QR_CODE_3}}\",\n  \"scan_latitude\": -6.125678,\n  \"scan_longitude\": 106.791234,\n  \"scan_altitude\": 26.5,\n  \"note\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.2 Try Scanning Out of Radius",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendance_id\": {{ATTENDANCE_ID}},\n  \"qr_code\": \"{{QR_CODE_2}}\",\n  \"scan_latitude\": -6.500000,\n  \"scan_longitude\": 106.900000,\n  \"scan_altitude\": 26.0,\n  \"note\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan"
+              ]
+            }
+          }
+        },
+        {
+          "name": "4.3 Try Scanning with Wrong Altitude",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"attendance_id\": {{ATTENDANCE_ID}},\n  \"qr_code\": \"{{QR_CODE_2}}\",\n  \"scan_latitude\": -6.124567,\n  \"scan_longitude\": 106.790123,\n  \"scan_altitude\": 100.0,\n  \"note\": \"\"\n}"
+            },
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "5. Photo Management",
+      "item": [
+        {
+          "name": "5.1 Get Scan Details with Photos",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan/{{PATROL_SCAN_ID}}",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan",
+                "{{PATROL_SCAN_ID}}"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.2 Download Photo",
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan-photo/{{PHOTO_ID}}/download",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan-photo",
+                "{{PHOTO_ID}}",
+                "download"
+              ]
+            }
+          }
+        },
+        {
+          "name": "5.3 Delete Photo",
+          "request": {
+            "method": "DELETE",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{MEMBER_TOKEN}}"
+              }
+            ],
+            "url": {
+              "raw": "{{BASE_URL}}/api/patrol-scan/{{PATROL_SCAN_ID}}/photo/{{PHOTO_ID}}",
+              "protocol": "http",
+              "host": [
+                "{{BASE_URL}}"
+              ],
+              "path": [
+                "api",
+                "patrol-scan",
+                "{{PATROL_SCAN_ID}}",
+                "photo",
+                "{{PHOTO_ID}}"
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "MEMBER_TOKEN",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "COMMANDER_TOKEN",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "ATTENDANCE_ID",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "COMMANDER_ATTENDANCE_ID",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "PATROL_SCAN_ID",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "COMMANDER_SCAN_ID",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "QR_CODE_1",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "QR_CODE_2",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "QR_CODE_3",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "STATIC_QR_CODE",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "PHOTO_ID",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}

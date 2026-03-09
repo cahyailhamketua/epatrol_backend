@@ -50,6 +50,7 @@ class ScheduleController extends Controller
             ->select(
                 'id',
                 'project_id',
+                'post_id',
                 'user_id',
                 'assignment_id',
                 'date',
@@ -97,6 +98,7 @@ class ScheduleController extends Controller
             ->select(
                 'id',
                 'project_id',
+                'post_id',
                 'user_id',
                 'assignment_id',
                 'date',
@@ -121,13 +123,18 @@ class ScheduleController extends Controller
      * LIST SCHEDULES BY USER
      * GET /users/{user}/schedules
      * GET /users/{user}/schedules?from_date=2025-12-01&to_date=2025-12-31
+     * GET /users/{user}/schedules?date=2025-12-06 (get specific date)
      */
     public function indexByUser(Request $request, User $user)
     {
         $query = $user->schedules()->with(['project', 'post', 'assignment']);
 
+        // Filter by specific date
+        if ($request->has('date')) {
+            $query->whereDate('date', $request->date);
+        }
         // Filter by date range
-        if ($request->has('from_date') && $request->has('to_date')) {
+        elseif ($request->has('from_date') && $request->has('to_date')) {
             $query->whereBetween('date', [$request->from_date, $request->to_date]);
         }
 
@@ -135,12 +142,14 @@ class ScheduleController extends Controller
             ->select(
                 'id',
                 'project_id',
+                'post_id',
                 'user_id',
                 'assignment_id',
                 'date',
                 'created_at'
             )
             ->orderBy('date')
+            ->orderBy('user_id')
             ->paginate(50);
 
         return response()->json([

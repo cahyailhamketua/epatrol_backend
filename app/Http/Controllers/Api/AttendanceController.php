@@ -13,6 +13,7 @@ use App\Models\PatrolScan;
 use App\Models\PatrolPoint;
 use App\Models\Absence;
 use App\Models\OvertimeLog;
+use App\Services\PatrolScanService;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use Carbon\Carbon;
@@ -21,11 +22,6 @@ use Illuminate\Validation\ValidationException;
 
 class AttendanceController extends Controller
 {
-    public function __construct()
-    {
-        $this->middleware('auth:api');
-    }
-
     /**
      * LIST ATTENDANCE
      * GET /attendances
@@ -87,64 +83,317 @@ class AttendanceController extends Controller
         ]);
     }
 
-    public function checkIn(Request $request)
+    /**
+     * VALIDATE TIME BEFORE CHECK-IN
+     * POST /api/attendances/validate-time
+     * Validasi apakah user bisa check-in (waktu sudah tepat atau belum)
+     * Sebelum user mengambil foto
+     */
+    public function validateCheckInTime(Request $request)
     {
-        // ========= AUTHORIZATION: User harus bisa create attendance
-        $this->authorize('create', Attendance::class);
+        $user = Auth::user();
 
-        $validator = Validator::make($request->all(), [
-            'project_id' => 'required|exists:projects,id',
+        $rules = [
             'latitude' => 'required|numeric',
             'longitude' => 'required|numeric',
-            'current_time' => 'required|date_format:Y-m-d H:i:s', // Device time
-            'selfie_photo' => 'required|image|max:1024',
-        ]);
+            'current_time' => 'required|date_format:Y-m-d H:i:s',
+        ];
+
+        // Anggota wajib pilih post. Komandan regu tidak perlu pilih post (auto dari schedule).
+        if ($user->role !== 'komandan_regu') {
+            $rules['post_type'] = 'required|string|in:static,mobile';
+            $rules['post_name'] = 'required|string';
+        } else {
+            $rules['post_type'] = 'sometimes|nullable|string|in:static,mobile';
+            $rules['post_name'] = 'sometimes|nullable|string';
+        }
+
+        $validator = Validator::make($request->all(), $rules);
 
         if ($validator->fails()) {
             return response()->json($validator->errors(), 422);
         }
 
-        $user = Auth::user();
-        $today = Carbon::today();
-        $now = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time); // DEVICE TIME
+        $deviceDateTime = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, 'Asia/Jakarta');
+        $today = $deviceDateTime->toDateString();
 
-        // GUARD 1: Cegah double check-in
+        // Check schedule untuk validasi assignment time
+        $schedule = Schedule::where('user_id', $user->id)
+            ->where('date', $today)
+            ->with('assignment', 'project')
+            ->first();
+
+        if (!$schedule) {
+            return response()->json([
+                'message' => 'Anda tidak memiliki jadwal hari ini.',
+                'date' => $today,
+            ], 403);
+        }
+
+        // Determine post
+        if ($user->role === 'komandan_regu') {
+            $post = $schedule->post;
+            if (!$post) {
+                return response()->json([
+                    'message' => 'Jadwal Anda belum memiliki post.',
+                    'date' => $today,
+                ], 403);
+            }
+            if ($post->type !== 'static') {
+                return response()->json([
+                    'message' => 'Jadwal komandan regu harus menggunakan pos static.',
+                    'post_id' => $post->id,
+                    'post_type' => $post->type,
+                ], 422);
+            }
+        } else {
+            // Check post exists dan sesuai dengan project user (berdasarkan type dan name)
+            $post = Post::where('type', $request->post_type)
+                ->where('name', $request->post_name)
+                ->where('project_id', $user->project_id)
+                ->first();
+
+            if (!$post) {
+                return response()->json([
+                    'message' => 'Pos tidak ditemukan. Pilih pos yang tersedia di project Anda.',
+                    'post_type' => $request->post_type,
+                    'post_name' => $request->post_name,
+                ], 404);
+            }
+        }
+
+        $assignment = $schedule->assignment;
+        $project = $schedule->project;
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+        $now = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone);
+        $now->setTimezone('UTC');
+
+        // Check location
+        if (!$project || !$project->location_latitude || !$project->location_longitude) {
+            return response()->json([
+                'message' => 'Project tidak memiliki data lokasi. Hubungi administrator.',
+                'project_id' => $schedule->project_id,
+            ], 403);
+        }
+
+        $globalRadius = (float) ($project->radius ?? 100);
+        $deviceLatitude = (float) $request->latitude;
+        $deviceLongitude = (float) $request->longitude;
+        $referenceLatitude = (float) $project->location_latitude;
+        $referenceLongitude = (float) $project->location_longitude;
+
+        $distance = $this->calculateDistance(
+            $referenceLatitude,
+            $referenceLongitude,
+            $deviceLatitude,
+            $deviceLongitude
+        );
+
+        if ($distance > $globalRadius) {
+            return response()->json([
+                'message' => 'Anda berada di luar radius absen masuk.',
+                'your_location' => [
+                    'latitude' => round($deviceLatitude, 6),
+                    'longitude' => round($deviceLongitude, 6),
+                ],
+                'reference_location' => [
+                    'latitude' => round($referenceLatitude, 6),
+                    'longitude' => round($referenceLongitude, 6),
+                ],
+                'distance' => round($distance, 2) . ' meters',
+                'allowed_radius' => $globalRadius . ' meters',
+            ], 403);
+        }
+
+        // Check time (Assignment O/OFF: bypass schedule time validation)
+        $lateMinutes = 0;
+        $computedStatus = 'HADIR';
+
+        if (!$assignment->isOffDuty()) {
+            $gracePeriod = $assignment->grace_period ?? 15;
+            $startTime = Carbon::createFromFormat('Y-m-d H:i:s', $today . ' ' . $assignment->start_time, $projectTimezone);
+            $startTime->setTimezone('UTC');
+            $graceDeadline = $startTime->copy()->addMinutes($gracePeriod);
+
+            if ($now->isBefore($startTime)) {
+                $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
+                $startTimeInProjectTz = $startTime->copy()->setTimezone($projectTimezone);
+                return response()->json([
+                    'message' => 'Belum waktunya absen masuk.',
+                    'assignment' => [
+                        'code' => $assignment->code,
+                        'start_time' => $startTimeInProjectTz->format('H:i:s'),
+                    ],
+                    'your_time' => $nowInProjectTz->format('H:i:s'),
+                    'wait_until' => $startTimeInProjectTz->format('H:i:s'),
+                    'timezone' => $projectTimezone,
+                ], 403);
+            }
+
+            if ($now->isAfter($graceDeadline)) {
+                $lateMinutes = $now->diffInMinutes($startTime);
+                $computedStatus = 'HADIR TELAT';
+            }
+        }
+
+        $todayCarbon = Carbon::parse($today);
+        $dateFormatted = $todayCarbon->translatedFormat('d F Y');
+        $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
+
+        return response()->json([
+            'message' => 'Waktu check-in valid. Silakan ambil foto selfie.',
+            'can_checkin' => true,
+            'date' => $today,
+            'date_formatted' => $dateFormatted,
+            'time' => $nowInProjectTz->format('H:i:s'),
+            'timezone' => $projectTimezone,
+            'status' => $computedStatus,
+            'late_minutes' => $lateMinutes,
+            'distance' => round($distance, 2) . ' meters',
+            'allowed_radius' => $globalRadius . ' meters',
+            'post' => [
+                'id' => $post->id,
+                'name' => $post->name,
+                'type' => $post->type,
+            ],
+        ], 200);
+    }
+
+    public function checkIn(Request $request)
+    {
+        // ========= AUTHORIZATION: User harus bisa create attendance
+        $this->authorize('create', Attendance::class);
+
+        $user = Auth::user();
+
+        $rules = [
+            'latitude' => 'required|numeric',
+            'longitude' => 'required|numeric',
+            'current_time' => 'required|date_format:Y-m-d H:i:s', // Device time
+            'selfie_photo' => 'required|image|max:1024',
+        ];
+
+        // Anggota wajib pilih post. Komandan regu tidak perlu pilih post (auto dari schedule).
+        if ($user->role !== 'komandan_regu') {
+            $rules['post_type'] = 'required|string|in:static,mobile';
+            $rules['post_name'] = 'required|string';
+        } else {
+            $rules['post_type'] = 'sometimes|nullable|string|in:static,mobile';
+            $rules['post_name'] = 'sometimes|nullable|string';
+        }
+
+        $validator = Validator::make($request->all(), $rules);
+
+        if ($validator->fails()) {
+            return response()->json($validator->errors(), 422);
+        }
+
+        // PENTING: Extract DATE dari device time terlebih dahulu (sebelum load schedule)
+        // Gunakan default timezone untuk parse, karena project belum di-load
+        $deviceDateTime = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, 'Asia/Jakarta');
+        $today = $deviceDateTime->toDateString(); // e.g., "2026-02-13"
+        $todayCarbon = Carbon::parse($today);
+
+        // GUARD 0: Cek attendance hari lalu yang belum checkout
+        $yesterdayUnclosed = Attendance::where('user_id', $user->id)
+            ->where('date', '<', $today)
+            ->whereNotNull('check_in_at')
+            ->whereNull('check_out_at')
+            ->first();
+
+        if ($yesterdayUnclosed) {
+            $yesterdayDate = $yesterdayUnclosed->date->translatedFormat('d F Y');
+            return response()->json([
+                'message' => 'Anda memiliki attendance hari sebelumnya yang belum di-close.',
+                'info' => 'Absen ' . $yesterdayDate . ' belum check-out. Silakan check-out terlebih dahulu.',
+                'unclosed_attendance' => [
+                    'id' => $yesterdayUnclosed->id,
+                    'date' => $yesterdayUnclosed->date->format('Y-m-d'),
+                    'check_in_at' => $yesterdayUnclosed->check_in_at->format('H:i:s'),
+                ],
+            ], 403);
+        }
+
+        // GUARD 1: Cegah double check-in (gunakan device date, bukan server date)
         $existingAttendance = Attendance::where('user_id', $user->id)
             ->where('date', $today)
             ->whereNotNull('check_in_at')
             ->first();
 
         if ($existingAttendance) {
-            return response()->json(['message' => 'Anda sudah absen masuk hari ini.'], 409);
+            $dateFormatted = $todayCarbon->translatedFormat('d F Y'); // e.g., "13 February 2026" (device date!)
+            $existingCheckinTime = $existingAttendance->check_in_at->setTimezone('Asia/Jakarta')->format('H:i:s'); // Use default timezone for display
+            return response()->json([
+                'message' => 'Anda sudah absen masuk hari ini.',
+                'info' => 'Ini tanggal ' . $dateFormatted,
+                'date' => $today,
+                'last_check_in_at' => $existingCheckinTime,
+            ], 409);
         }
 
-        // GUARD 2: Wajib punya schedule hari ini
-        // ========== EFFICIENT DATA LOADING PATTERN ==========
-        // SINGLE Query dengan Eager Load: Schedule + Assignment + Post + Project
-        // Ini lebih efisien daripada query terpisah (1 query vs 4+ queries)
-        // Dari Schedule kita dapat:
-        //   - assignment.code (P/M/O)  
-        //   - assignment.start_time, end_time, grace_period
-        //   - post.name, post.type (mobile/static)
-        //   - post.latitude, post.longitude (jika mobile post)
-        //   - project.location_latitude, location_longitude (reference point)
-        //   - project.radius (geofence radius)
+        // GUARD 2: Wajib punya schedule hari ini (hanya untuk validasi assignment time)
         $schedule = Schedule::where('user_id', $user->id)
             ->where('date', $today)
-            ->with('assignment', 'post', 'project')
+            ->with('assignment', 'project')
             ->first();
 
         if (!$schedule) {
             return response()->json([
                 'message' => 'Anda tidak memiliki jadwal hari ini.',
-                'date' => $today->format('Y-m-d'),
+                'date' => $today,
             ], 403);
         }
 
-        // Unpack semua data dari single schedule query
+        // Determine post
+        if ($user->role === 'komandan_regu') {
+            $post = $schedule->post;
+            if (!$post) {
+                return response()->json([
+                    'message' => 'Jadwal Anda belum memiliki post.',
+                    'date' => $today,
+                ], 403);
+            }
+            if ($post->type !== 'static') {
+                return response()->json([
+                    'message' => 'Jadwal komandan regu harus menggunakan pos static.',
+                    'post_id' => $post->id,
+                    'post_type' => $post->type,
+                ], 422);
+            }
+        } else {
+            // ========= GET POST DARI REQUEST (BERDASARKAN TYPE & NAME) ==========
+            // User memilih post berdasarkan type dan name dari daftar project
+            $post = Post::where('type', $request->post_type)
+                ->where('name', $request->post_name)
+                ->where('project_id', $user->project_id)
+                ->first();
+
+            if (!$post) {
+                return response()->json([
+                    'message' => 'Pos tidak ditemukan. Pilih pos yang tersedia di project Anda.',
+                    'post_type' => $request->post_type,
+                    'post_name' => $request->post_name,
+                ], 404);
+            }
+        }
+
+        // Unpack semua data yang diperlukan
         $assignment = $schedule->assignment;
-        $post = $schedule->post;
         $project = $schedule->project;
+        
+        // NOW: Parse device time dalam timezone PROJECT
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+        $now = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone);
+        // Convert ke UTC untuk internal logic
+        $now->setTimezone('UTC');
+
+        // GUARD: Project harus memiliki location
+        if (!$project || !$project->location_latitude || !$project->location_longitude) {
+            return response()->json([
+                'message' => 'Project tidak memiliki data lokasi. Hubungi administrator.',
+                'project_id' => $schedule->project_id,
+            ], 403);
+        }
 
         // GUARD 3: Cegah attendance jika absence APPROVED
         $approvedAbsence = Absence::where('user_id', $user->id)
@@ -160,28 +409,14 @@ class AttendanceController extends Controller
             ], 403);
         }
 
-        // GUARD 4: Validasi Assignment O (OFF) - harus ada overtime APPROVED
-        if ($assignment->isOffDuty()) {
-            $approvedOvertime = OvertimeLog::where('user_id', $user->id)
-                ->where('schedule_id', $schedule->id)
-                ->where('date', $today)
-                ->where('status', 'APPROVED')
-                ->first();
-
-            if (!$approvedOvertime) {
-                return response()->json([
-                    'message' => 'Hari ini adalah hari OFF. Memerlukan persetujuan lembur terlebih dahulu.',
-                    'code' => $assignment->code,
-                ], 403);
-            }
-
-            // Jika ada approved overtime, gunakan planned_start_time sebagai acuan
-            $startTime = Carbon::createFromTimeString($approvedOvertime->planned_start_time);
-        } else {
-            $startTime = Carbon::createFromTimeString($assignment->start_time);
+        $isOffDutyAssignment = $assignment->isOffDuty(); // termasuk code 'O'
+        $startTime = null;
+        if (!$isOffDutyAssignment) {
+            $startTime = Carbon::createFromFormat('Y-m-d H:i:s', $today . ' ' . $assignment->start_time, $projectTimezone);
+            $startTime->setTimezone('UTC');
         }
 
-        // ========== LOCATION VERIFICATION ==========
+        // ========== LOCATION VERIFICATION ===========
         // Reference location: Diambil dari project (fixed office location)
         // Device location: Dikirim dari HP/Laptop user saat check-in (dynamic)
         // Kalkulasi: Jarak antara reference location dan device location harus <= radius
@@ -191,15 +426,15 @@ class AttendanceController extends Controller
         // - POST type: Determine jika ada special location rules (mobile/static)
         // - DEVICE location: Current user position dari HP/request
         
-        $globalRadius = $project->radius ?? 100; // Radius project (default 100m)
+        $globalRadius = (float) ($project->radius ?? 5); // Radius project (default 100m)
         
         // DEVICE location (dari HP/Laptop user saat check-in)
-        $deviceLatitude = $request->latitude;
-        $deviceLongitude = $request->longitude;
+        $deviceLatitude = (float) $request->latitude;
+        $deviceLongitude = (float) $request->longitude;
         
         // REFERENCE location: Coming from PROJECT (fixed office location)
-        $referenceLatitude = $project->location_latitude;
-        $referenceLongitude = $project->location_longitude;
+        $referenceLatitude = (float) $project->location_latitude;
+        $referenceLongitude = (float) $project->location_longitude;
         $locationType = 'project'; // Always project location
         
         // Hitung jarak menggunakan Haversine formula
@@ -230,43 +465,50 @@ class AttendanceController extends Controller
         // ========== TIME VERIFICATION ==========
         // Assignment time: Tersimpan di database (start_time, end_time, grace_period)
         // Device time: Dikirim dari HP/Laptop user (current_time)
-        // Kalkulasi: current_time harus antara start_time dan (start_time + grace_period * 2)
+        // Kalkulasi: 
+        // - Jika now < start_time → reject (belum waktunya)
+        // - Jika start_time <= now <= start_time + grace_period → HADIR (on time)
+        // - Jika now > start_time + grace_period → HADIR TELAT (late, can still check-in)
         
-        $gracePeriod = $assignment->grace_period ?? 15; // Grace period dari assignment (menit)
-        $graceDeadline = $startTime->copy()->addMinutes($gracePeriod); // Batas akhir tanpa telat
-        $absoluteDeadline = $startTime->copy()->addMinutes($gracePeriod * 2); // Batas absolute (tetap bisa check-in)
-
         $lateMinutes = 0;
         $attendanceStatus = 'HADIR';
         $computedStatus = 'HADIR';
 
-        if ($now->isBefore($startTime)) {
-            // Belum saatnya check-in (terlalu pagi)
-            return response()->json([
-                'message' => 'Belum waktunya absen masuk.',
-                'assignment' => [
-                    'code' => $assignment->code,
-                    'start_time' => $startTime->format('H:i:s'),
-                ],
-                'your_time' => $now->format('H:i:s'),
-                'wait_until' => $startTime->format('H:i:s'),
-            ], 403);
-        } elseif ($now->isAfter($absoluteDeadline)) {
-            // Sudah lewat batas absolute (terlalu lambat)
-            return response()->json([
-                'message' => 'Waktu absen masuk telah berakhir.',
-                'assignment' => [
-                    'code' => $assignment->code,
-                    'start_time' => $startTime->format('H:i:s'),
-                ],
-                'allowed_deadline' => $absoluteDeadline->format('H:i:s'),
-                'your_time' => $now->format('H:i:s'),
-            ], 403);
-        } elseif ($now->isAfter($graceDeadline)) {
-            // Telat, tapi masih bisa check-in
-            $lateMinutes = $now->diffInMinutes($startTime);
-            $attendanceStatus = 'HADIR TELAT';
-            $computedStatus = 'HADIR TELAT';
+        // Assignment O/OFF: tidak perlu sesuai schedule untuk check-in time
+        if (!$isOffDutyAssignment) {
+            $gracePeriod = $assignment->grace_period ?? 15;
+            $endTime = Carbon::createFromFormat('Y-m-d H:i:s', $today . ' ' . $assignment->end_time, $projectTimezone);
+            $endTime->setTimezone('UTC');
+
+            // HANDLE MIDNIGHT SHIFT: Jika end_time <= start_time, artinya shift melintasi tengah malam
+            if ($endTime->lessThanOrEqualTo($startTime)) {
+                $endTime->addDay();
+            }
+
+            // Untuk perbandingan logic, gunakan COPY - jangan ubah original!
+            $startTimeForComparison = $startTime->copy();
+            $graceDeadlineForComparison = $startTimeForComparison->copy()->addMinutes($gracePeriod);
+
+            if ($now->isBefore($startTimeForComparison)) {
+                // Belum saatnya check-in (terlalu pagi)
+                $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
+                $startTimeInProjectTz = $startTime->copy()->setTimezone($projectTimezone);  // ← Use ORIGINAL!
+                return response()->json([
+                    'message' => 'Belum waktunya absen masuk.',
+                    'assignment' => [
+                        'code' => $assignment->code,
+                        'start_time' => $startTimeInProjectTz->format('H:i:s'),  // ← Tetap original
+                    ],
+                    'your_time' => $nowInProjectTz->format('H:i:s'),
+                    'wait_until' => $startTimeInProjectTz->format('H:i:s'),
+                    'timezone' => $projectTimezone,
+                ], 403);
+            } elseif ($now->isAfter($graceDeadlineForComparison)) {
+                // Telat, tapi masih bisa check-in (tidak ada absolute deadline)
+                $lateMinutes = $now->diffInMinutes($startTime);
+                $attendanceStatus = 'HADIR TELAT';
+                $computedStatus = 'HADIR TELAT';
+            }
         }
 
         // Handle selfie photo upload
@@ -274,17 +516,15 @@ class AttendanceController extends Controller
 
         // Create attendance
         $attendance = Attendance::create([
-            'project_id' => $request->project_id,
+            'project_id' => $schedule->project_id,
             'user_id' => $user->id,
             'schedule_id' => $schedule->id,
             'assignment_id' => $assignment->id,
-            'post_id' => $post->id,
-            'date' => $today,
+            'post_id' => $post->id,  // Anggota: dari request. Komandan: auto dari schedule (static).
+            'date' => $today,  // Gunakan device date
             'check_in_at' => $now,
             'checkin_lat' => $request->latitude,
             'checkin_lng' => $request->longitude,
-            'reference_lat' => $referenceLatitude,
-            'reference_lng' => $referenceLongitude,
             'attendance_status' => $attendanceStatus,
             'computed_status' => $computedStatus,
             'late_minutes' => $lateMinutes,
@@ -293,104 +533,41 @@ class AttendanceController extends Controller
             'selfie_photo_path' => $selfiePath,
         ]);
 
+        $dateFormatted = $todayCarbon->translatedFormat('d F Y'); // e.g., "13 Februari 2026" (device date!)
+        $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
+        
+        // Determine status dan late info
+        $lateInfo = '';
+        if ($attendance->computed_status === 'HADIR TELAT') {
+            $lateInfo = ' (Telat ' . $attendance->late_minutes . ' menit)';
+        }
+        
         return response()->json([
             'message' => 'Absen masuk berhasil.',
+            'info' => 'Ini tanggal ' . $dateFormatted . $lateInfo,
+            'date' => $today,
+            'time' => $nowInProjectTz->format('H:i:s'),
+            'timezone' => $projectTimezone,
+            'status' => $attendance->computed_status,
+            'late_minutes' => (int) $attendance->late_minutes,
             'data' => $this->formatAttendanceResponse($attendance),
         ], 201);
     }
 
     public function patrolScan(Request $request)
     {
+        // NOTE: Endpoint ini dipertahankan untuk compatibility, tetapi sekarang memakai tabel patrol_scans (qr_code_id) + patrol_scan_photos.
         $validator = Validator::make($request->all(), [
             'attendance_id' => 'required|exists:attendances,id',
-            'patrol_point_id' => 'required|exists:patrol_points,id',
-            'latitude' => 'required|numeric',
-            'longitude' => 'required|numeric',
+            'qr_code' => 'required_without:patrol_point_id|string',
+            'patrol_point_id' => 'required_without:qr_code|exists:patrol_points,id',
+            'scan_latitude' => 'required|numeric|between:-90,90',
+            'scan_longitude' => 'required|numeric|between:-180,180',
+            'scan_altitude' => 'nullable|numeric',
+            'note' => 'nullable|string|max:500',
+            'current_time' => 'required|date_format:Y-m-d H:i:s', // Device time
             'photos' => 'required|array|min:4',
-            'photos.*' => 'image|max:1024',
-            'description_option' => 'required|string|in:aman,ada kendala',
-            'notes' => 'nullable|string',
-            'current_time' => 'required|date_format:Y-m-d H:i:s', // Device time
-        ]);
-
-        if ($validator->fails()) {
-            return response()->json($validator->errors(), 422);
-        }
-
-        $user = Auth::user();
-        $attendance = Attendance::where('id', $request->attendance_id)
-                                ->where('user_id', $user->id)
-                                ->first();
-
-        if (!$attendance) {
-            return response()->json(['message' => 'Absensi tidak ditemukan atau tidak milik Anda.'], 404);
-        }
-
-        // ========= AUTHORIZATION: User hanya bisa scan patrol untuk attendance miliknya
-        $this->authorize('patrolScan', $attendance);
-
-        $post = $attendance->post;
-        if ($post->type !== 'mobile') {
-            return response()->json(['message' => 'Patrol scan hanya untuk pos mobile.'], 403);
-        }
-
-        $patrolPoint = PatrolPoint::find($request->patrol_point_id);
-        if (!$patrolPoint) {
-            return response()->json(['message' => 'Titik patroli tidak ditemukan.'], 404);
-        }
-
-        // Verify patrol point belongs to the post
-        if ($patrolPoint->post_id !== $post->id) {
-            return response()->json(['message' => 'Titik patroli tidak sesuai dengan pos yang dipilih.'], 403);
-        }
-
-        // Location verification for patrol point (dummy for now)
-        $patrolPointRadius = 50; // This should come from patrol point settings
-        $distance = $this->calculateDistance($patrolPoint->latitude, $patrolPoint->longitude, $request->latitude, $request->longitude);
-
-        if ($distance > $patrolPointRadius) {
-            return response()->json(['message' => 'Anda berada di luar radius titik patroli.'], 403);
-        }
-
-        // Sequence order verification
-        $lastPatrolScan = PatrolScan::where('attendance_id', $attendance->id)
-                                    ->orderBy('sequence_order', 'desc')
-                                    ->first();
-
-        $expectedSequence = $lastPatrolScan ? $lastPatrolScan->patrolPoint->sequence_order + 1 : 1;
-
-        if ($patrolPoint->sequence_order !== $expectedSequence) {
-            return response()->json(['message' => 'Titik patroli harus discan secara berurutan. Titik selanjutnya adalah ' . $expectedSequence], 403);
-        }
-
-        // Create patrol scan entry
-        $patrolScan = PatrolScan::create([
-            'attendance_id' => $attendance->id,
-            'patrol_point_id' => $request->patrol_point_id,
-            'scan_time' => Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time), // DEVICE TIME
-            'notes' => $request->notes,
-            'description_option' => $request->description_option,
-            'latitude' => $request->latitude,
-            'longitude' => $request->longitude,
-            'sequence_order' => $patrolPoint->sequence_order,
-        ]);
-
-        // Handle photo uploads
-        foreach ($request->file('photos') as $photo) {
-            $path = $photo->store('patrol_scans', 'public');
-            $patrolScan->photos()->create(['path' => $path]); // Assuming PatrolScan has a photos relationship
-        }
-
-        return response()->json(['message' => 'Scan titik patroli berhasil.', 'patrol_scan' => $patrolScan], 201);
-    }
-
-    public function checkOut(Request $request)
-    {
-        $validator = Validator::make($request->all(), [
-            'attendance_id' => 'required|exists:attendances,id',
-            'latitude' => 'required|numeric',
-            'longitude' => 'required|numeric',
-            'current_time' => 'required|date_format:Y-m-d H:i:s', // Device time
+            'photos.*' => 'required|image|max:5120',
         ]);
 
         if ($validator->fails()) {
@@ -400,8 +577,101 @@ class AttendanceController extends Controller
         $user = Auth::user();
         $attendance = Attendance::where('id', $request->attendance_id)
             ->where('user_id', $user->id)
-            ->with('assignment', 'post')
+            ->with('project.organization', 'post', 'user')
             ->first();
+
+        if (!$attendance) {
+            return response()->json(['message' => 'Absensi tidak ditemukan atau tidak milik Anda.'], 404);
+        }
+
+        $this->authorize('scanForAttendance', [PatrolScan::class, $attendance]);
+
+        $qrCode = $request->qr_code;
+        if (!$qrCode && $request->patrol_point_id) {
+            $point = PatrolPoint::with('qrCode')->find($request->patrol_point_id);
+            if (!$point || !$point->qrCode) {
+                return response()->json([
+                    'message' => 'QR code untuk patrol point tidak ditemukan.',
+                    'patrol_point_id' => (int) $request->patrol_point_id,
+                ], 404);
+            }
+            $qrCode = $point->qrCode->code;
+        }
+
+        $projectTimezone = $attendance->project?->timezone ?? $attendance->project?->organization?->timezone ?? 'Asia/Jakarta';
+        $scanTime = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone)->setTimezone('UTC');
+
+        $service = app(PatrolScanService::class);
+        $result = $service->createScan(
+            $attendance,
+            $qrCode,
+            (float) $request->scan_latitude,
+            (float) $request->scan_longitude,
+            $request->scan_altitude !== null ? (float) $request->scan_altitude : null,
+            $request->note,
+            $scanTime,
+            $request->file('photos') ?? []
+        );
+
+        if (!$result['success']) {
+            return response()->json([
+                'success' => false,
+                'errors' => $result['errors'],
+            ], 422);
+        }
+
+        return response()->json([
+            'success' => true,
+            'message' => $result['message'],
+            'data' => [
+                'scan' => $result['scan']->load('photos', 'qrCode.patrolPoint'),
+                'patrol_point' => $result['patrolPoint'],
+                'progress' => $service->getScanProgress($attendance),
+            ],
+        ], 201);
+    }
+
+    public function checkOut(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            // OLD: 'attendance_id' => 'required|exists:attendances,id',
+            'attendance_id' => 'sometimes|exists:attendances,id', // MODIFIED: Now optional, can get from token
+            'latitude' => 'required|numeric',
+            'longitude' => 'required|numeric',
+            'current_time' => 'required|date_format:Y-m-d H:i:s', // Device time
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json($validator->errors(), 422);
+        }
+
+        $user = Auth::user();
+        
+        // MODIFIED: If attendance_id not provided, find active attendance from token
+        if ($request->has('attendance_id')) {
+            // OLD: Use provided attendance_id
+            // OLD: $attendance = Attendance::where('id', $request->attendance_id)
+            //     ->where('user_id', $user->id)
+            //     ->with('assignment', 'post')
+            //     ->first();
+            
+            // NEW: Use provided attendance_id
+            $attendance = Attendance::where('id', $request->attendance_id)
+                ->where('user_id', $user->id)
+                ->with('assignment', 'post')
+                ->first();
+        } else {
+            // NEW: Get active attendance from token (user with checked-in but not checked-out)
+            // Cari attendance aktif terbaru tanpa membatasi ke tanggal server hari ini,
+            // supaya tetap ketemu meskipun device time beda hari (lebih maju / mundur).
+            $attendance = Attendance::where('user_id', $user->id)
+                ->whereNotNull('check_in_at')
+                ->whereNull('check_out_at')
+                ->orderBy('date', 'desc')
+                ->orderBy('check_in_at', 'desc')
+                ->with('assignment', 'post')
+                ->first();
+        }
 
         if (!$attendance) {
             return response()->json(['message' => 'Absensi tidak ditemukan.'], 404);
@@ -423,29 +693,29 @@ class AttendanceController extends Controller
         $assignment = $attendance->assignment;
         $post = $attendance->post;
         $project = $attendance->project;
-        $now = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time); // DEVICE TIME
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+        $now = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone);
+        // Convert ke UTC untuk internal logic
+        $now->setTimezone('UTC');
+
+        // GUARD: Project harus memiliki location
+        if (!$project || !$project->location_latitude || !$project->location_longitude) {
+            return response()->json([
+                'message' => 'Project tidak memiliki data lokasi. Hubungi administrator.',
+                'project_id' => $attendance->project_id,
+            ], 403);
+        }
 
         // ========== LOCATION VERIFICATION for CHECK-OUT ==========
-        // Same reference location logic as check-in
-        $globalRadius = $project->radius ?? 100;
+        // Same reference location logic as check-in: Always use PROJECT location
+        $globalRadius = (float) ($project->radius ?? 100);
         
-        $deviceLatitude = $request->latitude;
-        $deviceLongitude = $request->longitude;
+        $deviceLatitude = (float) $request->latitude;
+        $deviceLongitude = (float) $request->longitude;
         
-        // REFERENCE location: Prioritas Assignment > Post > Project
-        $referenceLatitude = null;
-        $referenceLongitude = null;
-        
-        if ($assignment->latitude && $assignment->longitude) {
-            $referenceLatitude = $assignment->latitude;
-            $referenceLongitude = $assignment->longitude;
-        } elseif ($post && $post->latitude && $post->longitude) {
-            $referenceLatitude = $post->latitude;
-            $referenceLongitude = $post->longitude;
-        } else {
-            $referenceLatitude = $project->location_latitude;
-            $referenceLongitude = $project->location_longitude;
-        }
+        // REFERENCE location: Always from PROJECT (fixed office location)
+        $referenceLatitude = (float) $project->location_latitude;
+        $referenceLongitude = (float) $project->location_longitude;
         
         $distance = $this->calculateDistance(
             $referenceLatitude,
@@ -466,34 +736,47 @@ class AttendanceController extends Controller
             ], 403);
         }
 
-        // Tentukan end_time (bisa dari overtime atau assignment)
-        if ($assignment->isOffDuty()) {
-            $overtimeLog = OvertimeLog::where('schedule_id', $attendance->schedule_id)
-                ->where('date', $attendance->date)
-                ->where('status', 'APPROVED')
-                ->first();
+        $isOffDutyAssignment = $assignment->isOffDuty(); // termasuk code 'O'
+        $overtimeMinutes = 0;
+        $overtimeStatus = 'NONE';
 
-            if (!$overtimeLog) {
-                return response()->json(['message' => 'Data overtime tidak ditemukan.'], 404);
+        // Assignment O/OFF: tidak perlu overtime log approval, dan overtime dihitung dari durasi kerja (check-in -> check-out)
+        if ($isOffDutyAssignment) {
+            $overtimeMinutes = (int) $attendance->check_in_at->diffInMinutes($now);
+            $overtimeStatus = 'APPROVED';
+        } else {
+            // Tentukan end_time dari assignment
+            $endTime = Carbon::createFromFormat('Y-m-d H:i:s', $attendance->date->format('Y-m-d') . ' ' . $assignment->end_time, $projectTimezone);
+            $endTime->setTimezone('UTC');
+
+            // Handle midnight shift - gunakan COPY untuk perbandingan, jangan ubah original
+            $startTime = Carbon::createFromFormat('Y-m-d H:i:s', $attendance->date->format('Y-m-d') . ' ' . $assignment->start_time, $projectTimezone);
+            $startTime->setTimezone('UTC');
+
+            // HANDLE MIDNIGHT SHIFT
+            if ($endTime->lessThanOrEqualTo($startTime)) {
+                $endTime->addDay();
             }
 
-            $endTime = Carbon::createFromTimeString($overtimeLog->planned_end_time);
-        } else {
-            $endTime = Carbon::createFromTimeString($assignment->end_time);
-        }
+            $endTimeForComparison = $endTime->copy();
 
-        // Handle midnight shift
-        $startTime = Carbon::createFromTimeString($assignment->start_time);
-        if ($endTime->lessThanOrEqualTo($startTime)) {
-            $endTime->addDay();
-        }
+            if ($now->isBefore($endTimeForComparison)) {
+                $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
+                $endTimeInProjectTz = $endTime->copy()->setTimezone($projectTimezone);  // ← Use ORIGINAL!
+                return response()->json([
+                    'message' => 'Belum waktunya absen pulang.',
+                    'end_time' => $endTimeInProjectTz->format('H:i:s'),  // ← Tetap original
+                    'current_time' => $nowInProjectTz->format('H:i:s'),
+                    'timezone' => $projectTimezone,
+                ], 403);
+            }
 
-        if ($now->isBefore($endTime)) {
-            return response()->json([
-                'message' => 'Belum waktunya absen pulang.',
-                'end_time' => $endTime->format('H:i:s'),
-                'current_time' => $now->format('H:i:s'),
-            ], 403);
+            // Untuk perhitungan overtime, gunakan endTimeForComparison yang sudah adjusted
+            if ($now->isAfter($endTimeForComparison)) {
+                $overtimeMinutes = $now->diffInMinutes($endTimeForComparison);
+                // Status tetap NONE sampai di-approve via OvertimeLog
+                $overtimeStatus = 'NONE';
+            }
         }
 
         // Verify all patrol scans completed (for mobile posts)
@@ -510,17 +793,7 @@ class AttendanceController extends Controller
             }
         }
 
-        // Calculate overtime_minutes jika ada
-        $overtimeMinutes = 0;
-        $overtimeStatus = 'NONE';
-
-        if ($now->isAfter($endTime)) {
-            $overtimeMinutes = $now->diffInMinutes($endTime);
-            // Status tetap NONE sampai di-approve via OvertimeLog
-            $overtimeStatus = 'NONE';
-        }
-
-        // Update computed_status
+        // Update computed_status (overtimeMinutes dan overtimeStatus sudah dihitung di atas)
         $computedStatus = $attendance->computed_status; // Start dari status check-in
 
         if ($overtimeMinutes > 0 && strpos($computedStatus, 'LEMBUR') === false) {
@@ -536,8 +809,16 @@ class AttendanceController extends Controller
             'computed_status' => $computedStatus,
         ]);
 
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+        $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
+
         return response()->json([
             'message' => 'Absen pulang berhasil.',
+            'date' => $attendance->date->format('Y-m-d'),
+            'time' => $nowInProjectTz->format('H:i:s'),
+            'timezone' => $projectTimezone,
+            'status' => $computedStatus,
+            'overtime_minutes' => (int) $overtimeMinutes,
             'data' => $this->formatAttendanceResponse($attendance->fresh()),
         ], 200);
     }
@@ -547,7 +828,9 @@ class AttendanceController extends Controller
      * GET /attendances/{attendance}
      */
     public function show(Attendance $attendance)
-    {        // ========= AUTHORIZATION: User hanya bisa lihat attendance yang relevant        $this->authorize('view', $attendance);
+    {
+        // ========= AUTHORIZATION: User hanya bisa lihat attendance yang relevant
+        $this->authorize('view', $attendance);
 
         $attendance->load('assignment', 'post', 'schedule');
 
@@ -559,6 +842,17 @@ class AttendanceController extends Controller
     // Helper function to calculate distance between two coordinates (Haversine formula)
     private function calculateDistance($lat1, $lon1, $lat2, $lon2)
     {
+        // Validate and cast to float
+        $lat1 = (float) $lat1;
+        $lon1 = (float) $lon1;
+        $lat2 = (float) $lat2;
+        $lon2 = (float) $lon2;
+
+        // Check for null or zero coordinates
+        if ($lat1 === 0.0 || $lon1 === 0.0 || $lat2 === 0.0 || $lon2 === 0.0) {
+            return 99999999; // Return large distance to reject
+        }
+
         $earthRadius = 6371000; // meters
         $dLat = deg2rad($lat2 - $lat1);
         $dLon = deg2rad($lon2 - $lon1);
@@ -582,12 +876,26 @@ class AttendanceController extends Controller
     private function formatAttendanceResponse(Attendance $attendance)
     {
         $post = $attendance->post;
+        if (!$post && $attendance->isCommanderAttendance()) {
+            $post = $attendance->schedule?->post
+                ?? $attendance->project?->posts()->where('type', 'static')->first();
+        }
         $assignment = $attendance->assignment;
+        $project = $attendance->project;
+        $timezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+        
+        $dateFormatted = $attendance->date->translatedFormat('d F Y'); // e.g., "12 Februari 2026"
+        
+        // Convert check-in time to project timezone
+        $checkInTime = $attendance->check_in_at?->setTimezone($timezone)->format('H:i:s');
+        $checkOutTime = $attendance->check_out_at?->setTimezone($timezone)->format('H:i:s');
         
         return [
             'id' => $attendance->id,
             'user_id' => $attendance->user_id,
             'date' => $attendance->date->format('Y-m-d'),
+            'date_formatted' => $dateFormatted,
+            'timezone' => $timezone,
             'schedule' => [
                 'assignment' => [
                     'code' => $assignment->code,  // P (Pagi), M (Malam), O (OFF)
@@ -598,14 +906,14 @@ class AttendanceController extends Controller
                     'is_off_duty' => $assignment->isOffDuty(),
                 ],
                 'post' => [
-                    'id' => $post->id,
-                    'name' => $post->name,      // Pos Gate, Pos Utama, Patroli Mobile
-                    'type' => $post->type,      // static atau mobile
+                    'id' => $post?->id,
+                    'name' => $post?->name,
+                    'type' => $post?->type,
                 ],
             ],
             'timing' => [
-                'check_in_at' => $attendance->check_in_at?->format('H:i:s'),
-                'check_out_at' => $attendance->check_out_at?->format('H:i:s'),
+                'check_in_at' => $checkInTime,
+                'check_out_at' => $checkOutTime,
                 'late_minutes' => $attendance->late_minutes,
                 'overtime_minutes' => $attendance->overtime_minutes,
             ],

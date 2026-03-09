@@ -2,7 +2,7 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Model; 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 
 class Project extends Model
@@ -17,7 +17,9 @@ class Project extends Model
         'location_longitude',
         'location_address',
         'location_city',
-        'active',
+        'timezone',
+        'radius',
+        'active'
     ];
 
     public function organization()

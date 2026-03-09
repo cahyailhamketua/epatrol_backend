@@ -72,6 +72,84 @@ class Attendance extends Model
                     ->whereDate('date', $this->date);
     }
 
+    /**
+     * Check if this attendance is for a commander (komandan_regu)
+     */
+    public function isCommanderAttendance(): bool
+    {
+        return $this->user->role === 'komandan_regu';
+    }
+
+    /**
+     * Get patrol points for this attendance
+     * For commander: only 1 static point per project
+     * For member: all patrol points in selected post
+     */
+    public function getPatrolPoints()
+    {
+        if ($this->isCommanderAttendance()) {
+            // Commander: patrol points from their static post (prefer attendance->post_id, fallback to first static post in project)
+            $staticPostId = null;
+            if ($this->post_id && $this->post?->type === 'static') {
+                $staticPostId = $this->post_id;
+            } else {
+                $staticPostId = $this->project?->posts()
+                    ->where('type', 'static')
+                    ->value('id');
+            }
+
+            if (!$staticPostId) {
+                return collect();
+            }
+
+            return PatrolPoint::where('post_id', $staticPostId)->get();
+        }
+
+        // Member: static post does not require patrol scan
+        if ($this->post?->type === 'static') {
+            return collect();
+        }
+
+        // Member: mobile post -> get all patrol points ordered by sequence
+        return $this->post?->patrolPoints()->get() ?? collect();
+    }
+
+    /**
+     * Get location coordinates based on user type
+     * For commander: project location
+     * For member: post location or first patrol point
+     */
+    public function getLocationCoordinates(): array
+    {
+        if ($this->isCommanderAttendance()) {
+            // Commander gets location from project
+            return [
+                'latitude' => $this->project->location_latitude,
+                'longitude' => $this->project->location_longitude,
+                'altitude' => null,
+                'radius' => $this->project->radius,
+            ];
+        }
+
+        // Member gets location from first patrol point
+        $firstPoint = $this->post?->patrolPoints()->first();
+        if ($firstPoint) {
+            return [
+                'latitude' => $firstPoint->latitude,
+                'longitude' => $firstPoint->longitude,
+                'altitude' => $firstPoint->altitude,
+                'radius' => $firstPoint->radius,
+            ];
+        }
+
+        return [
+            'latitude' => null,
+            'longitude' => null,
+            'altitude' => null,
+            'radius' => 0,
+        ];
+    }
+
     // Scopes
     public function scopePresent($query)
     {

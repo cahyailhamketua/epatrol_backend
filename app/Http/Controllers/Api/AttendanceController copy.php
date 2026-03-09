@@ -19,11 +19,6 @@ use Illuminate\Validation\ValidationException;
 
 class AttendanceController extends Controller
 {
-    public function __construct()
-    {
-        $this->middleware('auth:api');
-    }
-
     public function checkIn(Request $request)
     {
         $validator = Validator::make($request->all(), [

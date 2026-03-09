@@ -14,6 +14,8 @@ use App\Http\Controllers\Api\ActivityAssignmentTimeController;
 use App\Http\Controllers\Api\PatrolPointController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\AttendanceController;
+use App\Http\Controllers\Api\PatrolScanController;
+use App\Http\Controllers\Api\QrCodeController;
 
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
@@ -181,7 +183,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // List attendances (dengan filter)
     Route::get('/attendances', [AttendanceController::class, 'index']);
     
-    // Check-in
+    // Validate time before check-in (tanpa foto)
+    Route::post('/attendances/validate-time', [AttendanceController::class, 'validateCheckInTime']);
+    
+    // Check-in (dengan foto)
     Route::post('/attendances/check-in', [AttendanceController::class, 'checkIn']);
     
     // Patrol scan (mobile post)
@@ -192,4 +197,34 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // View attendance detail
     Route::get('/attendances/{attendance}', [AttendanceController::class, 'show']);
+});
+
+// Patrol Scan routes
+Route::middleware('auth:sanctum')->group(function () {
+    // QR Code image (for printing / display)
+    Route::get('/qr-codes/{qrCode}/image', [QrCodeController::class, 'image']);
+
+    // Get scan progress for attendance
+    Route::get('/attendance/{attendance}/patrol-scan/progress', [PatrolScanController::class, 'getProgress']);
+    
+    // Get all scans for attendance
+    Route::get('/attendance/{attendance}/patrol-scans', [PatrolScanController::class, 'getAttendanceScans']);
+    
+    // Get scan statistics
+    Route::get('/attendance/{attendance}/patrol-scan/statistics', [PatrolScanController::class, 'getStatistics']);
+    
+    // Perform patrol scan (QR scan)
+    Route::post('/patrol-scan', [PatrolScanController::class, 'performScan']);
+    
+    // Get scan details
+    Route::get('/patrol-scan/{scan}', [PatrolScanController::class, 'show']);
+    
+    // Add photo to scan
+    Route::post('/patrol-scan/{scan}/photo', [PatrolScanController::class, 'addPhoto']);
+    
+    // Delete photo from scan
+    Route::delete('/patrol-scan/{scan}/photo/{photoId}', [PatrolScanController::class, 'deletePhoto']);
+    
+    // Download photo
+    Route::get('/patrol-scan-photo/{photoId}/download', [PatrolScanController::class, 'downloadPhoto']);
 });

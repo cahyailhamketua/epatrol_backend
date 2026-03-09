@@ -20,6 +20,8 @@ return new class extends Migration
             $table->string('location_longitude')->nullable();
             $table->string('location_address')->nullable();
             $table->string('location_city')->nullable();
+            $table->integer('radius')->default(100)->comment('Geofence radius in meters (default: 100m)');
+            $table->string('timezone')->default('Asia/Jakarta')->comment('Timezone: Asia/Jakarta (WIB), Asia/Makassar (WITA), Asia/Jayapura (WIT)');
             $table->boolean('active')->default(true);
             $table->timestamps();
         });

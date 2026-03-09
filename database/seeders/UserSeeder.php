@@ -20,6 +20,13 @@ class UserSeeder extends Seeder
                 'role' => 'dev',
                 'password' => Hash::make('developer123'),
             ],
+            [
+                'full_name' => 'Developer',
+                'username' => 'developer2',
+                'email' => 'dev@system.bgeo2',
+                'role' => 'dev',
+                'password' => Hash::make('developer123'),
+            ],
 
             // ORGANIZATION 1
             [

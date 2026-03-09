@@ -129,14 +129,35 @@ class AssignmentController extends Controller
         $this->authorize('manage', [Assignment::class, $project]);
 
         try {
+            // RULE:
+            // - Untuk assignment code = 'O' (OFF): start_time & end_time TIDAK wajib (boleh null).
+            // - Untuk assignment lain: start_time & end_time WAJIB diisi.
             $validated = $request->validate([
                 'name'         => 'required|string|max:100',
                 'code'         => 'required|string|max:50',
                 'is_off'       => 'sometimes|boolean',
-                'start_time'   => 'required|date_format:H:i',
-                'end_time'     => 'required|date_format:H:i',
+                'start_time'   => 'nullable|date_format:H:i',
+                'end_time'     => 'nullable|date_format:H:i',
                 'grace_period' => 'nullable|integer|min:0',
             ]);
+
+            $validated['code'] = strtoupper($validated['code']);
+
+            // Normalisasi aturan untuk code 'O'
+            if ($validated['code'] === 'O') {
+                // OFF: paksa is_off = true dan jam tidak dipakai (set ke 00:00 supaya lolos constraint DB)
+                $validated['is_off'] = true;
+                $validated['start_time'] = $validated['start_time'] ?? '00:00';
+                $validated['end_time'] = $validated['end_time'] ?? '00:00';
+            } else {
+                // Non-O: start_time & end_time wajib
+                if (empty($validated['start_time']) || empty($validated['end_time'])) {
+                    throw ValidationException::withMessages([
+                        'start_time' => ['start_time wajib diisi untuk assignment non-O.'],
+                        'end_time'   => ['end_time wajib diisi untuk assignment non-O.'],
+                    ]);
+                }
+            }
         } catch (ValidationException $e) {
             return response()->json([
                 'success'     => false,
@@ -180,10 +201,37 @@ class AssignmentController extends Controller
                 'name'         => 'sometimes|string|max:100',
                 'code'         => 'sometimes|string|max:50',
                 'is_off'       => 'sometimes|boolean',
-                'start_time'   => 'sometimes|date_format:H:i',
-                'end_time'     => 'sometimes|date_format:H:i',
+                'start_time'   => 'sometimes|nullable|date_format:H:i',
+                'end_time'     => 'sometimes|nullable|date_format:H:i',
                 'grace_period' => 'sometimes|integer|min:0',
             ]);
+
+            // Gabungkan dengan nilai lama untuk menentukan state akhir
+            $finalData = array_merge($assignment->only([
+                'name',
+                'code',
+                'is_off',
+                'start_time',
+                'end_time',
+                'grace_period',
+            ]), $validated);
+
+            $finalData['code'] = strtoupper($finalData['code']);
+
+            if ($finalData['code'] === 'O') {
+                // OFF: paksa is_off = true dan jam tidak dipakai (set ke 00:00 supaya lolos constraint DB)
+                $finalData['is_off'] = true;
+                $finalData['start_time'] = $finalData['start_time'] ?? '00:00';
+                $finalData['end_time'] = $finalData['end_time'] ?? '00:00';
+            } else {
+                // Non-O: start_time & end_time wajib
+                if (empty($finalData['start_time']) || empty($finalData['end_time'])) {
+                    throw ValidationException::withMessages([
+                        'start_time' => ['start_time wajib diisi untuk assignment non-O.'],
+                        'end_time'   => ['end_time wajib diisi untuk assignment non-O.'],
+                    ]);
+                }
+            }
         } catch (ValidationException $e) {
             return response()->json([
                 'success'     => false,
@@ -193,11 +241,11 @@ class AssignmentController extends Controller
             ], 422);
         }
 
-        $assignment->update($validated);
+        $assignment->update($finalData);
 
         return response()->json([
             'message' => 'assignment updated successfully',
-            'data'    => $assignment,
+            'data'    => $assignment->refresh(),
         ]);
     }
 

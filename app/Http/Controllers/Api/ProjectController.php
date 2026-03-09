@@ -79,6 +79,8 @@ class ProjectController extends Controller
                 'location_longitude' => 'nullable|string|max:255',
                 'location_address' => 'nullable|string|max:255',
                 'location_city' => 'nullable|string|max:255',
+                'radius' => 'nullable|integer|min:10|max:10000',
+                'timezone' => 'nullable|string|in:Asia/Jakarta,Asia/Makassar,Asia/Jayapura',
             ]);
         } catch (ValidationException $e) {
             return response()->json([
@@ -117,6 +119,8 @@ class ProjectController extends Controller
                 'location_longitude' => 'sometimes|string|max:255',
                 'location_address' => 'sometimes|string|max:255',
                 'location_city' => 'sometimes|string|max:255',
+                'radius' => 'sometimes|integer|min:10|max:10000',
+                'timezone' => 'sometimes|string|in:Asia/Jakarta,Asia/Makassar,Asia/Jayapura',
             ]);
         } catch (ValidationException $e) {
             return response()->json([
