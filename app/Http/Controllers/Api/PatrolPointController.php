@@ -7,10 +7,10 @@ use App\Models\Post;
 use App\Models\PatrolPoint;
 use App\Models\PatrolScan;
 use Illuminate\Http\Request;
-use App\Models\QrCode;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 class PatrolPointController extends Controller
 {
@@ -128,6 +128,38 @@ class PatrolPointController extends Controller
                 ],
             ],
         ], 201);
+    }
+
+    /**
+     * LIST PATROL POINT BY POST
+     * GET /posts/{post}/patrol-points
+     * Bentuk data mengikuti transformasi di PostController@index
+     */
+    public function indexByPost(Request $request, Post $post)
+    {
+        $this->authorize('view', $post);
+
+        $points = $post->patrolPoints()
+            ->with('qrCode')
+            ->orderBy('sequence_order')
+            ->get();
+
+        $points->transform(function ($patrolPoint) {
+            if ($patrolPoint->qrCode) {
+                $qrCode = QrCode::format('svg')
+                    ->size(200)
+                    ->generate($patrolPoint->qrCode->code);
+                $patrolPoint->qr_code_image = 'data:image/svg+xml;base64,' . base64_encode($qrCode);
+            } else {
+                $patrolPoint->qr_code_image = null;
+            }
+
+            return $patrolPoint;
+        });
+
+        return response()->json([
+            'data' => $points,
+        ]);
     }
 
     /**
