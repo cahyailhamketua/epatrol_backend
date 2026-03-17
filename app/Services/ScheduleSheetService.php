@@ -68,15 +68,28 @@ class ScheduleSheetService
 
         $rows = [];
 
+        // Summary total untuk seluruh project (bulan tersebut)
+        $overallSummary = [
+            'SCHEDULE_COUNT' => 0, // jumlah schedule kerja (exclude off)
+            'HK' => 0,
+            'OT' => 0,
+            'OFF' => 0,
+            'SK' => 0,
+            'SD' => 0,
+            'IZIN' => 0,
+            'CUTI' => 0,
+            'ALPA' => 0,
+        ];
+
         foreach ($grouped as $userId => $userSchedules) {
 
             $user = $userSchedules->first()->user;
 
             // Summary mentah per user
             $summary = [
-                'p' => 0,
-                'm' => 0,
-                'o' => 0,
+                'P' => 0,
+                'M' => 0,
+                'O' => 0,
                 'HADIR' => 0,
                 'HADIR TELAT' => 0,
                 'SAKIT' => 0,
@@ -88,6 +101,8 @@ class ScheduleSheetService
             ];
 
             $days = [];
+            $scheduleCount = 0; // exclude OFF (assignment is_off=true)
+            $offCount = 0; // assignment is_off=true
 
             foreach (CarbonPeriod::create($startDate, $endDate) as $date) {
 
@@ -99,8 +114,20 @@ class ScheduleSheetService
                     continue;
                 }
 
-                $assignmentCode = $schedule->assignment->code;
+                $assignment = $schedule->assignment;
+                $assignmentCode = strtoupper((string) $assignment->code);
+
+                if (! array_key_exists($assignmentCode, $summary)) {
+                    $summary[$assignmentCode] = 0;
+                }
                 $summary[$assignmentCode]++;
+
+                // Count schedule kerja: selain off (assignment is_off=true)
+                if ($assignment->is_off) {
+                    $offCount++;
+                } else {
+                    $scheduleCount++;
+                }
 
                 $key = $userId . '_' . $dateString;
 
@@ -151,16 +178,29 @@ class ScheduleSheetService
 
             // Summary akhir yang dipakai frontend (HK, OT, OFF, dll)
             $finalSummary = [
-                'SCHEDULE' => ($summary['P'] ?? 0) + ($summary['M'] ?? 0) + ($summary['O'] ?? 0),
+                // jumlah schedule kerja (exclude OFF / is_off=true)
+                'SCHEDULE_COUNT' => $scheduleCount,
                 'HK' => ($summary['HADIR'] ?? 0) + ($summary['HADIR TELAT'] ?? 0),
                 'OT' => $summary['OVERTIME_MINUTES'] ?? 0,
-                'OFF' => $summary['O'] ?? 0,
+                // OFF dihitung berdasarkan assignment is_off=true
+                'OFF' => $offCount,
                 'SK' => $summary['SAKIT'] ?? 0,
                 'SD' => $summary['DINAS'] ?? 0,
                 'IZIN' => $summary['IZIN'] ?? 0,
                 'CUTI' => $summary['CUTI'] ?? 0,
                 'ALPA' => $summary['ALPA'] ?? 0,
             ];
+
+            // Akumulasi summary keseluruhan
+            $overallSummary['SCHEDULE_COUNT'] += $finalSummary['SCHEDULE_COUNT'];
+            $overallSummary['HK'] += $finalSummary['HK'];
+            $overallSummary['OT'] += $finalSummary['OT'];
+            $overallSummary['OFF'] += $finalSummary['OFF'];
+            $overallSummary['SK'] += $finalSummary['SK'];
+            $overallSummary['SD'] += $finalSummary['SD'];
+            $overallSummary['IZIN'] += $finalSummary['IZIN'];
+            $overallSummary['CUTI'] += $finalSummary['CUTI'];
+            $overallSummary['ALPA'] += $finalSummary['ALPA'];
 
             $rows[] = [
                 'user' => [
@@ -185,6 +225,7 @@ class ScheduleSheetService
                 'end_date' => $endDate,
                 'generated_at' => now(),
             ],
+            'overall_summary' => $overallSummary,
             'rows' => $rows,
         ];
     }
