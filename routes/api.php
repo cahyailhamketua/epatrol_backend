@@ -186,6 +186,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // Generate schedules by team & month
     Route::post('/projects/{project}/teams/{team}/schedules/generate', [ScheduleController::class, 'generateForTeam']);
     Route::post('/projects/{project}/teams/{team}/schedule-template', [ScheduleController::class, 'setTeamScheduleTemplate']);
+    Route::get('/projects/{project}/teams/{team}/schedule-template', [ScheduleController::class, 'showTeamScheduleTemplate']);
     Route::post('/projects/{project}/teams/{team}/schedules/generate-from-template', [ScheduleController::class, 'generateForTeamFromTemplate']);
     Route::delete('/projects/{project}/teams/{team}/schedules', [ScheduleController::class, 'destroyForTeam']);
     

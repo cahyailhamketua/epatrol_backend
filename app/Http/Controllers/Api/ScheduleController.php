@@ -746,6 +746,29 @@ class ScheduleController extends Controller
     }
 
     /**
+     * SHOW TEAM SCHEDULE TEMPLATE
+     * GET /projects/{project}/teams/{team}/schedule-template
+     */
+    public function showTeamScheduleTemplate(Project $project, Team $team)
+    {
+        $this->authorize('viewAnyByProject', [Schedule::class, $project]);
+
+        if ($team->project_id !== $project->id) {
+            return response()->json([
+                'message' => 'Team does not belong to this project',
+            ], 403);
+        }
+
+        $template = TemplateSchedule::where('project_id', $project->id)
+            ->where('team_id', $team->id)
+            ->first();
+
+        return response()->json([
+            'data' => $template,
+        ]);
+    }
+
+    /**
      * GENERATE SCHEDULE FOR TEAM & MONTH BASED ON CONTINUOUS TEMPLATE PATTERN
      * POST /projects/{project}/teams/{team}/schedules/generate-from-template
      *
