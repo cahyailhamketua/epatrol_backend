@@ -111,4 +111,16 @@ class User extends Authenticatable
         {
             return $this->hasMany(PayrollRun::class, 'finalized_by');
         }
+
+        public function teams()
+    {
+        return $this->belongsToMany(Team::class,'team_users')
+            ->withPivot('start_date','end_date')
+            ->withTimestamps();
+    }
+
+    public function teamMemberships()
+    {
+        return $this->hasMany(TeamUser::class);
+    }
 }

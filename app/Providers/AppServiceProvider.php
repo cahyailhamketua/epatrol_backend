@@ -15,6 +15,7 @@ use App\Models\Post;
 use App\Models\Project;
 use App\Models\Schedule;
 use App\Models\User;
+use App\Models\Team;
 use App\Policies\AttendancePolicy;
 use App\Policies\ActivityPolicy;
 use App\Policies\ActivityAssignmentTimePolicy;
@@ -27,6 +28,7 @@ use App\Policies\PostPolicy;
 use App\Policies\ProjectPolicy;
 use App\Policies\SchedulePolicy;
 use App\Policies\UserPolicy;
+use App\Policies\TeamPolicy;
 use Illuminate\Support\Facades\Gate;
 
 class AppServiceProvider extends ServiceProvider
@@ -58,5 +60,6 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(Project::class, ProjectPolicy::class);
         Gate::policy(Schedule::class, SchedulePolicy::class);
         Gate::policy(User::class, UserPolicy::class);
+        Gate::policy(Team::class, TeamPolicy::class);
     }
 }

@@ -5,9 +5,14 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\Project;
 use App\Models\Schedule;
+use App\Models\Team;
 use App\Models\User;
 use App\Models\Assignment;
 use App\Models\Post;
+use App\Models\TeamUser;
+use App\Models\TemplateSchedule;
+use App\Services\ScheduleGeneratorService;
+use App\Services\ScheduleSheetService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
 
@@ -476,75 +481,546 @@ class ScheduleController extends Controller
 
     /**
      * GET SCHEDULE SHEET (GRID VIEW)
-     * GET /projects/{project}/schedules/sheet?from_date=2025-12-01&to_date=2025-12-31
-     *
-     * Returns schedules in a matrix format (users x dates)
+     * GET /projects/{project}/schedules/sheet?month=2025-12&team_id=1
      */
-    public function sheet(Request $request, Project $project)
+    public function sheet(Project $project, Request $request)
+    {
+        $this->authorize('viewAnyByProject', [Schedule::class, $project]);
+
+        $month = $request->query('month');
+
+        $request->validate([
+            'month' => 'required|date_format:Y-m',
+            'team_id' => 'nullable|exists:teams,id',
+        ]);
+
+        $service = new ScheduleSheetService();
+
+        $data = $service->generate($project->id, $month);
+
+        // Optional filter by team_id at response level
+        $teamId = $request->query('team_id');
+        if ($teamId) {
+            $data['rows'] = collect($data['rows'])
+                ->filter(function ($row) use ($teamId) {
+                    return isset($row['user']['team_id']) && $row['user']['team_id'] == $teamId;
+                })
+                ->values()
+                ->all();
+        }
+
+        // Meta days (list tanggal & nama hari) untuk header grid
+        $startDate = $data['meta']['start_date'];
+        $endDate = $data['meta']['end_date'];
+
+        $days = [];
+        $current = \Carbon\Carbon::parse($startDate)->copy();
+        $end = \Carbon\Carbon::parse($endDate)->copy();
+        while ($current->lessThanOrEqualTo($end)) {
+            $days[] = [
+                'date' => $current->format('Y-m-d'),
+                'day_name' => $current->translatedFormat('l'),
+            ];
+            $current->addDay();
+        }
+
+        $data['meta']['days'] = $days;
+
+        return response()->json($data);
+    }
+
+    /**
+     * EXPORT SCHEDULE SHEET TO XLSX
+     * GET /projects/{project}/schedules/export?month=2025-12&team_id=1
+     */
+    public function export(Project $project, Request $request)
     {
         $this->authorize('viewAnyByProject', [Schedule::class, $project]);
 
         $validated = $request->validate([
-            'from_date' => 'required|date_format:Y-m-d',
-            'to_date' => 'required|date_format:Y-m-d',
+            'month' => 'required|date_format:Y-m',
+            'team_id' => 'sometimes|nullable|exists:teams,id',
         ]);
 
-        $users = $project->users()
-            ->select('id', 'full_name', 'username')
-            ->orderBy('full_name')
-            ->get();
+        $month = $validated['month'];
+        $teamId = $validated['team_id'] ?? null;
 
-        $schedules = $project->schedules()
-            ->whereBetween('date', [$validated['from_date'], $validated['to_date']])
-            ->with(['post', 'user', 'assignment'])
-            ->get();
+        $service = new ScheduleSheetService();
+        $data = $service->generate($project->id, $month);
 
-        // Group schedules by user_id and date
-        $schedulesByUserAndDate = [];
-        foreach ($schedules as $schedule) {
-            $key = $schedule->user_id . '-' . $schedule->date;
-            $schedulesByUserAndDate[$key] = [
-                'assignment_code' => $schedule->assignment->code,
-                'assignment_name' => $schedule->assignment->name,
-                'assignment_id' => $schedule->assignment->id,
-            ];
+        // Filter by team if provided
+        if ($teamId) {
+            $data['rows'] = collect($data['rows'])
+                ->filter(function ($row) use ($teamId) {
+                    return isset($row['user']['team_id']) && (int) $row['user']['team_id'] === (int) $teamId;
+                })
+                ->values()
+                ->all();
         }
 
-        // Build sheet data
-        $sheet = [];
-        foreach ($users as $user) {
-            $row = [
-                'user_id' => $user->id,
-                'user_name' => $user->full_name,
-                'username' => $user->username,
-                'schedules' => [],
-            ];
+        $days = $data['meta']['days'] ?? [];
+        if (empty($days)) {
+            $startDate = $data['meta']['start_date'];
+            $endDate = $data['meta']['end_date'];
+            $current = \Carbon\Carbon::parse($startDate)->copy();
+            $end = \Carbon\Carbon::parse($endDate)->copy();
+            while ($current->lessThanOrEqualTo($end)) {
+                $days[] = [
+                    'date' => $current->format('Y-m-d'),
+                ];
+                $current->addDay();
+            }
+        }
 
-            // Generate date range
-            $date = new \DateTime($validated['from_date']);
-            $endDate = new \DateTime($validated['to_date']);
+        $fileName = sprintf(
+            'schedule_project_%d_%s.csv',
+            $project->id,
+            str_replace('-', '', $month)
+        );
 
-            while ($date <= $endDate) {
-                $dateStr = $date->format('Y-m-d');
-                $key = $user->id . '-' . $dateStr;
+        return response()->streamDownload(function () use ($data, $days) {
+            $handle = fopen('php://output', 'w');
 
-                if (isset($schedulesByUserAndDate[$key])) {
-                    $row['schedules'][$dateStr] = $schedulesByUserAndDate[$key];
-                } else {
-                    $row['schedules'][$dateStr] = null;
+            // Header
+            $header = ['User', 'Team', 'Post'];
+            foreach ($days as $dayMeta) {
+                $header[] = $dayMeta['date'];
+            }
+            $header = array_merge($header, ['SCHEDULE', 'HK', 'OT', 'OFF', 'SK', 'SD', 'IZIN', 'CUTI', 'ALPA']);
+            fputcsv($handle, $header);
+
+            // Rows
+            foreach ($data['rows'] as $row) {
+                $user = $row['user'];
+                $summary = $row['summary'] ?? [];
+                $daysData = $row['days'] ?? [];
+
+                $line = [
+                    $user['name'] ?? '',
+                    $user['team_name'] ?? '',
+                    $user['post_name'] ?? '',
+                ];
+
+                foreach ($days as $dayMeta) {
+                    $date = $dayMeta['date'];
+                    $line[] = isset($daysData[$date]) ? ($daysData[$date]['assignment'] ?? '') : '';
                 }
 
-                $date->modify('+1 day');
+                $line[] = $summary['SCHEDULE'] ?? 0;
+                $line[] = $summary['HK'] ?? 0;
+                $line[] = $summary['OT'] ?? 0;
+                $line[] = $summary['OFF'] ?? 0;
+                $line[] = $summary['SK'] ?? 0;
+                $line[] = $summary['SD'] ?? 0;
+                $line[] = $summary['IZIN'] ?? 0;
+                $line[] = $summary['CUTI'] ?? 0;
+                $line[] = $summary['ALPA'] ?? 0;
+
+                fputcsv($handle, $line);
             }
 
-            $sheet[] = $row;
+            fclose($handle);
+        }, $fileName, [
+            'Content-Type' => 'text/csv; charset=UTF-8',
+        ]);
+    }
+
+    /**
+     * GENERATE SCHEDULE FOR TEAM & MONTH
+     * POST /projects/{project}/teams/{team}/schedules/generate
+     */
+    public function generateForTeam(Project $project, Team $team, Request $request)
+    {
+        $this->authorize('manage', [Schedule::class, $project]);
+
+        $validated = $request->validate([
+            'month' => 'required|date_format:Y-m',
+            'pattern' => 'required|string',
+            'overwrite_existing' => 'sometimes|boolean',
+        ]);
+
+        if ($team->project_id !== $project->id) {
+            return response()->json([
+                'message' => 'Team does not belong to this project',
+            ], 403);
+        }
+
+        $month = $validated['month'];
+        $overwrite = $validated['overwrite_existing'] ?? false;
+
+        if ($overwrite) {
+            $startDate = \Carbon\Carbon::parse($month . '-01')->startOfMonth();
+            $endDate   = \Carbon\Carbon::parse($month . '-01')->endOfMonth();
+
+            Schedule::where('project_id', $project->id)
+                ->where('team_id', $team->id)
+                ->whereBetween('date', [$startDate, $endDate])
+                ->delete();
+        }
+
+        $service = new ScheduleGeneratorService();
+
+        $service->generate(
+            $project->id,
+            $month,
+            $team->id,
+            $validated['pattern']
+        );
+
+        return response()->json([
+            'message' => 'Schedule generated successfully for team.',
+        ]);
+    }
+
+    /**
+     * SET OR UPDATE TEAM SCHEDULE TEMPLATE (PATTERN ONLY)
+     * POST /projects/{project}/teams/{team}/schedule-template
+     *
+     * Body:
+     * {
+     *   "pattern": ["P","P","M","M","O","O"],
+     *   "start_date": "2025-12-01" // optional, default: today
+     * }
+     */
+    public function setTeamScheduleTemplate(Project $project, Team $team, Request $request)
+    {
+        $this->authorize('manage', [Schedule::class, $project]);
+
+        if ($team->project_id !== $project->id) {
+            return response()->json([
+                'message' => 'Team does not belong to this project',
+            ], 403);
+        }
+
+        $validated = $request->validate([
+            'pattern' => 'required',
+            'start_date' => 'sometimes|date_format:Y-m-d',
+        ]);
+
+        // Terima pattern baik sebagai array maupun string "P,P,M,M,O,O"
+        $pattern = $validated['pattern'];
+        if (is_string($pattern)) {
+            $pattern = array_values(array_filter(array_map('trim', explode(',', $pattern))));
+        }
+
+        if (! is_array($pattern) || count($pattern) === 0) {
+            return response()->json([
+                'message' => 'Pattern must be a non-empty array or comma-separated string.',
+            ], 422);
+        }
+
+        // Validasi bahwa semua kode assignment ada di project ini
+        $codes = array_values(array_unique($pattern));
+
+        $assignments = Assignment::where('project_id', $project->id)
+            ->whereIn('code', $codes)
+            ->get()
+            ->keyBy('code');
+
+        if ($assignments->count() !== count($codes)) {
+            $missing = array_diff($codes, $assignments->keys()->all());
+
+            return response()->json([
+                'message' => 'Some assignment codes are not found in this project.',
+                'missing_codes' => array_values($missing),
+            ], 422);
+        }
+
+        $startDate = $validated['start_date'] ?? now()->toDateString();
+
+        $template = TemplateSchedule::updateOrCreate(
+            [
+                'project_id' => $project->id,
+                'team_id' => $team->id,
+            ],
+            [
+                'pattern' => $pattern,
+                'start_date' => $startDate,
+            ]
+        );
+
+        return response()->json([
+            'message' => 'Team schedule template saved successfully.',
+            'data' => $template,
+        ]);
+    }
+
+    /**
+     * GENERATE SCHEDULE FOR TEAM & MONTH BASED ON CONTINUOUS TEMPLATE PATTERN
+     * POST /projects/{project}/teams/{team}/schedules/generate-from-template
+     *
+     * Body:
+     * {
+     *   "month": "2026-01",
+     *   "template_month": "2025-12", // optional, default: month sebelumnya
+     *   "overwrite_existing": true   // optional
+     * }
+     */
+    public function generateForTeamFromTemplate(Project $project, Team $team, Request $request)
+    {
+        $this->authorize('manage', [Schedule::class, $project]);
+
+        $validated = $request->validate([
+            'month' => 'required|date_format:Y-m',
+            'template_month' => 'sometimes|date_format:Y-m',
+            'overwrite_existing' => 'sometimes|boolean',
+        ]);
+
+        if ($team->project_id !== $project->id) {
+            return response()->json([
+                'message' => 'Team does not belong to this project',
+            ], 403);
+        }
+
+        $targetMonth = $validated['month'];
+        $targetStart = \Carbon\Carbon::parse($targetMonth . '-01')->startOfMonth();
+        $targetEnd   = \Carbon\Carbon::parse($targetMonth . '-01')->endOfMonth();
+
+        // Tentukan bulan template: dari request atau default ke bulan sebelumnya
+        if (! empty($validated['template_month'])) {
+            $templateMonth = $validated['template_month'];
+        } else {
+            $templateMonth = $targetStart->copy()->subMonth()->format('Y-m');
+        }
+
+        // Ambil template pattern untuk tim
+        $template = TemplateSchedule::where('project_id', $project->id)
+            ->where('team_id', $team->id)
+            ->first();
+
+        if (! $template) {
+            return response()->json([
+                'message' => 'Team does not have a schedule template yet.',
+            ], 422);
+        }
+
+        $patternCodes = $template->pattern ?? [];
+        if (! is_array($patternCodes) || count($patternCodes) === 0) {
+            return response()->json([
+                'message' => 'Team schedule template pattern is empty or invalid.',
+            ], 422);
+        }
+
+        $cycleLength = count($patternCodes);
+
+        $templateStart = \Carbon\Carbon::parse($template->start_date)->startOfDay();
+
+        // Hitung offset berdasarkan selisih hari dari awal template ke awal bulan target
+        $daysSinceStart = $templateStart->diffInDays($targetStart);
+        $offset = $daysSinceStart % $cycleLength;
+
+        // Optional: hapus jadwal existing di bulan target
+        $overwrite = $validated['overwrite_existing'] ?? false;
+        if ($overwrite) {
+            Schedule::where('project_id', $project->id)
+                ->where('team_id', $team->id)
+                ->whereBetween('date', [$targetStart, $targetEnd])
+                ->delete();
+        }
+
+        // Siapkan map assignment code -> Assignment untuk project ini
+        $assignmentMap = Assignment::where('project_id', $project->id)
+            ->whereIn('code', $patternCodes)
+            ->get()
+            ->keyBy('code');
+
+        // Generate jadwal untuk semua anggota tim
+        $team->loadMissing('users');
+        $members = $team->users;
+
+        if ($members->isEmpty()) {
+            return response()->json([
+                'message' => 'Team has no members to generate schedules for.',
+            ], 422);
+        }
+
+        $dayIndex = $offset;
+        $current = $targetStart->copy();
+
+        while ($current->lessThanOrEqualTo($targetEnd)) {
+            $code = $patternCodes[$dayIndex % $cycleLength];
+            $assignment = $assignmentMap[$code] ?? null;
+
+            if (! $assignment) {
+                return response()->json([
+                    'message' => "Assignment with code '{$code}' not found in project.",
+                ], 422);
+            }
+
+            foreach ($members as $member) {
+                Schedule::updateOrCreate(
+                    [
+                        'project_id' => $project->id,
+                        'user_id' => $member->id,
+                        'date' => $current->format('Y-m-d'),
+                    ],
+                    [
+                        'assignment_id' => $assignment->id,
+                        'team_id' => $team->id,
+                    ]
+                );
+            }
+
+            $dayIndex++;
+            $current->addDay();
         }
 
         return response()->json([
-            'from_date' => $validated['from_date'],
-            'to_date' => $validated['to_date'],
-            'total_users' => count($users),
-            'data' => $sheet,
+            'message' => 'Schedule generated from template pattern successfully for team.',
+            'target_month' => $targetMonth,
+            'template_month' => $templateMonth,
+        ]);
+    }
+
+    /**
+     * DELETE ALL SCHEDULES FOR A TEAM IN A MONTH
+     * DELETE /projects/{project}/teams/{team}/schedules?month=2025-12
+     */
+    public function destroyForTeam(Project $project, Team $team, Request $request)
+    {
+        $this->authorize('manage', [Schedule::class, $project]);
+
+        $validated = $request->validate([
+            'month' => 'required|date_format:Y-m',
+        ]);
+
+        if ($team->project_id !== $project->id) {
+            return response()->json([
+                'message' => 'Team does not belong to this project',
+            ], 403);
+        }
+
+        $month = $validated['month'];
+        $startDate = \Carbon\Carbon::parse($month . '-01')->startOfMonth();
+        $endDate   = \Carbon\Carbon::parse($month . '-01')->endOfMonth();
+
+        $deleted = Schedule::where('project_id', $project->id)
+            ->where('team_id', $team->id)
+            ->whereBetween('date', [$startDate, $endDate])
+            ->delete();
+
+        return response()->json([
+            'message' => 'Team schedules deleted successfully.',
+            'deleted_count' => $deleted,
+        ]);
+    }
+
+    /**
+     * UPDATE ASSIGNMENT (CELL EDIT) FOR A SCHEDULE
+     * PATCH /schedules/{schedule}
+     */
+    public function updateAssignment(Request $request, Schedule $schedule)
+    {
+        $this->authorize('manage', [Schedule::class, $schedule->project]);
+
+        $validated = $request->validate([
+            'assignment_code' => 'required|string|exists:assignments,code',
+            'team_id' => 'sometimes|nullable|exists:teams,id',
+        ]);
+
+        // Pastikan assignment berasal dari project yang sama
+        $assignment = Assignment::where('code', $validated['assignment_code'])
+            ->where('project_id', $schedule->project_id)
+            ->firstOrFail();
+
+        $updateData = [
+            'assignment_id' => $assignment->id,
+        ];
+
+        if (array_key_exists('team_id', $validated)) {
+            if ($validated['team_id']) {
+                $team = Team::where('id', $validated['team_id'])
+                    ->where('project_id', $schedule->project_id)
+                    ->firstOrFail();
+                $updateData['team_id'] = $team->id;
+            } else {
+                $updateData['team_id'] = null;
+            }
+        }
+
+        $schedule->update($updateData);
+
+        return response()->json([
+            'message' => 'Schedule updated successfully',
+            'data' => [
+                'id' => $schedule->id,
+                'assignment_code' => $assignment->code,
+                'assignment_name' => $assignment->name,
+                'team_id' => $schedule->team_id,
+            ],
+        ]);
+    }
+
+    /**
+     * ADD MEMBER TO TEAM AND COPY LEADER SCHEDULE
+     * POST /teams/{team}/members
+     */
+    public function addTeamMember(Request $request, Team $team)
+    {
+        $this->authorize('manage', [Schedule::class, $team->project]);
+
+        $validated = $request->validate([
+            'user_id' => 'required|exists:users,id',
+            'start_date' => 'sometimes|date_format:Y-m-d',
+            'month' => 'required|date_format:Y-m',
+        ]);
+
+        $user = User::findOrFail($validated['user_id']);
+
+        if ($user->project_id !== $team->project_id) {
+            return response()->json([
+                'message' => 'User does not belong to this project',
+            ], 403);
+        }
+
+        // Buat/Update membership di pivot team_user
+        TeamUser::updateOrCreate(
+            [
+                'team_id' => $team->id,
+                'user_id' => $user->id,
+            ],
+            [
+                'start_date' => $validated['start_date'] ?? now()->toDateString(),
+                'end_date' => null,
+            ]
+        );
+
+        // Copy jadwal ketua regu untuk bulan yang diminta
+        $leaderId = $team->leader_id;
+
+        if (!$leaderId) {
+            return response()->json([
+                'message' => 'Team leader is not set',
+            ], 422);
+        }
+
+        $month = $validated['month'];
+        $startDate = \Carbon\Carbon::parse($month . '-01')->startOfMonth();
+        $endDate   = \Carbon\Carbon::parse($month . '-01')->endOfMonth();
+
+        $leaderSchedules = Schedule::where('project_id', $team->project_id)
+            ->where('team_id', $team->id)
+            ->where('user_id', $leaderId)
+            ->whereBetween('date', [$startDate, $endDate])
+            ->get();
+
+        foreach ($leaderSchedules as $leaderSchedule) {
+            Schedule::updateOrCreate(
+                [
+                    'project_id' => $leaderSchedule->project_id,
+                    'post_id' => $leaderSchedule->post_id,
+                    'user_id' => $user->id,
+                    'date' => $leaderSchedule->date,
+                ],
+                [
+                    'assignment_id' => $leaderSchedule->assignment_id,
+                    'team_id' => $team->id,
+                ]
+            );
+        }
+
+        return response()->json([
+            'message' => 'Team member added and schedule copied from leader.',
         ]);
     }
 }

@@ -14,6 +14,7 @@ class Schedule extends Model
         'post_id',
         'user_id',
         'assignment_id',
+        'team_id',
         'date',
     ];
 
@@ -78,5 +79,10 @@ class Schedule extends Model
             return $this->absence->absence_type;
         }
         return 'ALPHA';
+    }
+
+    public function team()
+    {
+        return $this->belongsTo(Team::class);
     }
 }

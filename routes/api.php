@@ -9,6 +9,7 @@ use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ShiftController;
 use App\Http\Controllers\Api\AssignmentController;
 use App\Http\Controllers\Api\PostController;
+use App\Http\Controllers\Api\TeamController;
 use App\Http\Controllers\Api\ActivityController;
 use App\Http\Controllers\Api\ActivityAssignmentTimeController;
 use App\Http\Controllers\Api\PatrolPointController;
@@ -72,8 +73,20 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/projects/{project}/activate', [ProjectController::class, 'activate']);
     // user by project
     Route::get('/projects/{project}/users', [ProjectController::class, 'users']);
+    // teams by project
+    Route::get('/projects/{project}/teams', [TeamController::class, 'indexByProject']);
+    Route::post('/projects/{project}/teams', [TeamController::class, 'store']);
     // activities schedule by project
     Route::get('/projects/{project}/activities/schedule', [ActivityController::class, 'scheduleByProject']);
+});
+
+// team routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/teams', [TeamController::class, 'index']);
+    Route::get('/teams/{team}', [TeamController::class, 'show']);
+    Route::put('/teams/{team}', [TeamController::class, 'update']);
+    Route::delete('/teams/{team}', [TeamController::class, 'destroy']);
+    Route::get('/teams/{team}/members', [TeamController::class, 'members']);
 });
 
 // shift routes
@@ -165,7 +178,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/projects/{project}/schedules', [ScheduleController::class, 'indexByProject']);
     Route::post('/projects/{project}/schedules', [ScheduleController::class, 'store']);
     Route::post('/projects/{project}/schedules/bulk', [ScheduleController::class, 'storeBulk']);
+
+    // Grid sheet & export
     Route::get('/projects/{project}/schedules/sheet', [ScheduleController::class, 'sheet']);
+    Route::get('/projects/{project}/schedules/export', [ScheduleController::class, 'export']);
+
+    // Generate schedules by team & month
+    Route::post('/projects/{project}/teams/{team}/schedules/generate', [ScheduleController::class, 'generateForTeam']);
+    Route::post('/projects/{project}/teams/{team}/schedule-template', [ScheduleController::class, 'setTeamScheduleTemplate']);
+    Route::post('/projects/{project}/teams/{team}/schedules/generate-from-template', [ScheduleController::class, 'generateForTeamFromTemplate']);
+    Route::delete('/projects/{project}/teams/{team}/schedules', [ScheduleController::class, 'destroyForTeam']);
     
     // Get schedules by user
     Route::get('/users/{user}/schedules', [ScheduleController::class, 'indexByUser']);
@@ -173,10 +195,14 @@ Route::middleware('auth:sanctum')->group(function () {
     // Individual schedule operations
     Route::get('/schedules/{schedule}', [ScheduleController::class, 'show']);
     Route::put('/schedules/{schedule}', [ScheduleController::class, 'update']);
+    Route::patch('/schedules/{schedule}', [ScheduleController::class, 'updateAssignment']);
     Route::delete('/schedules/{schedule}', [ScheduleController::class, 'destroy']);
     
     // Bulk delete
     Route::post('/schedules/delete-bulk', [ScheduleController::class, 'destroyBulk']);
+
+    // Team members management
+    Route::post('/teams/{team}/members', [ScheduleController::class, 'addTeamMember']);
 });
 
 // Attendance routes
