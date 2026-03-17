@@ -144,7 +144,7 @@ class AssignmentController extends Controller
             $validated['code'] = strtoupper($validated['code']);
 
             // Normalisasi aturan untuk code 'O'
-            if ($validated['code'] === 'O') {
+            if ($validated['code'] === 'o') {
                 // OFF: paksa is_off = true dan jam tidak dipakai (set ke 00:00 supaya lolos constraint DB)
                 $validated['is_off'] = true;
                 $validated['start_time'] = $validated['start_time'] ?? '00:00';
