@@ -141,7 +141,7 @@ class AssignmentController extends Controller
                 'grace_period' => 'nullable|integer|min:0',
             ]);
 
-            $validated['code'] = strtoupper($validated['code']);
+            $validated['code'] = strtolower($validated['code']);
 
             // Normalisasi aturan untuk code 'O'
             if ($validated['code'] === 'o') {
@@ -216,7 +216,7 @@ class AssignmentController extends Controller
                 'grace_period',
             ]), $validated);
 
-            $finalData['code'] = strtoupper($finalData['code']);
+            $finalData['code'] = strtolower($finalData['code']);
 
             if ($finalData['code'] === 'o') {
                 // OFF: paksa is_off = true dan jam tidak dipakai (set ke 00:00 supaya lolos constraint DB)
