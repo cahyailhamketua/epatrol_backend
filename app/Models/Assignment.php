@@ -73,7 +73,7 @@ class Assignment extends Model
 
     public function isOffDuty()
     {
-        return $this->is_off || $this->code === 'O';
+        return $this->is_off || $this->code === 'o';
     }
 
     public function getDurationInMinutes()

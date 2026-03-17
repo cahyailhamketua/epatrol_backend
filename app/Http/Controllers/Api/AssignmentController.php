@@ -218,7 +218,7 @@ class AssignmentController extends Controller
 
             $finalData['code'] = strtoupper($finalData['code']);
 
-            if ($finalData['code'] === 'O') {
+            if ($finalData['code'] === 'o') {
                 // OFF: paksa is_off = true dan jam tidak dipakai (set ke 00:00 supaya lolos constraint DB)
                 $finalData['is_off'] = true;
                 $finalData['start_time'] = $finalData['start_time'] ?? '00:00';
