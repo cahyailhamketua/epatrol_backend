@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\ValidationException;
 
 class AuthController extends Controller
@@ -50,6 +51,8 @@ class AuthController extends Controller
                 'role' => $user->role,
                 'project_id' => $user->project_id,
                 'organization_id' => $user->organization_id,
+                'avatar' => $user->avatar,
+                'avatar_url' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
             ],
         ]);
     }
@@ -101,8 +104,14 @@ class AuthController extends Controller
      */
     public function me(Request $request)
     {
+        $user = $request->user();
         return response()->json([
-            'user' => $request->user(),
+            'user' => array_merge(
+                $user->toArray(),
+                [
+                    'avatar_url' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
+                ]
+            ),
         ]);
     }
 }

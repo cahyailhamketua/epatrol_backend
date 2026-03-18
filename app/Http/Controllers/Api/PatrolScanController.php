@@ -77,7 +77,7 @@ class PatrolScanController extends Controller
         // supaya kompatibel dengan Postman/mobile yang mengirim banyak file
         // dengan key yang sama ("photos").
         $validated = $request->validate([
-            'attendance_id' => 'sometimes|exists:attendances,id',
+            'attendance_id' => 'sometimes|integer',
             'qr_code' => 'required|string',
             'scan_latitude' => 'required|numeric|between:-90,90',
             'scan_longitude' => 'required|numeric|between:-180,180',
@@ -90,7 +90,24 @@ class PatrolScanController extends Controller
         // - Jika attendance_id dikirim: gunakan itu (harus milik user & exist).
         // - Jika tidak: cari attendance aktif berdasarkan token (check-in sudah ada, check-out belum ada, paling baru).
         if (isset($validated['attendance_id'])) {
-            $attendance = Attendance::findOrFail($validated['attendance_id']);
+            $attendance = Attendance::with(['project.organization', 'user'])
+                ->where('id', (int) $validated['attendance_id'])
+                ->first();
+
+            if (!$attendance) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Attendance tidak valid',
+                ], 404);
+            }
+
+            // Attendance harus aktif untuk scan
+            if (!$attendance->check_in_at || $attendance->check_out_at) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Attendance tidak valid',
+                ], 400);
+            }
         } else {
             $user = $request->user();
             $attendance = Attendance::where('user_id', $user->id)

@@ -115,4 +115,28 @@ class AttendancePolicy
 
         return true;
     }
+
+    /**
+     * VIEW PROGRESS (aggregate) for project
+     * Dipakai untuk endpoint progress per assignment aktif.
+     */
+    public function progress(User $user): bool
+    {
+        // DEV bisa lihat semua
+        if ($user->role === 'dev') {
+            return true;
+        }
+
+        // Admin project & komandan regu (danru) bisa lihat progress di project miliknya
+        if (in_array($user->role, ['admin_project', 'komandan_regu'], true)) {
+            return (bool) $user->project_id;
+        }
+
+        // HO boleh (opsional) - tetap akan dibatasi di controller berdasarkan project_id user.
+        if ($user->role === 'ho') {
+            return (bool) $user->organization_id;
+        }
+
+        return false;
+    }
 }

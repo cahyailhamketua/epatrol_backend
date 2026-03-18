@@ -211,6 +211,9 @@ Route::middleware('auth:sanctum')->group(function () {
     // List attendances (dengan filter)
     Route::get('/attendances', [AttendanceController::class, 'index']);
     
+    // ` check-in/patrol per assignment aktif (project user)
+    Route::get('/attendances/progress', [AttendanceController::class, 'progress']);
+    
     // Validate time before check-in (tanpa foto)
     Route::post('/attendances/validate-time', [AttendanceController::class, 'validateCheckInTime']);
     

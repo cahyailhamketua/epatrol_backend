@@ -10,6 +10,7 @@ use App\Models\PatrolPoint;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Exception;
+use App\Services\ImageWebpService;
 
 class PatrolScanService
 {
@@ -113,18 +114,14 @@ class PatrolScanService
 
         // Verify the QR code belongs to patrol point of this attendance's post
         if ($attendance->isCommanderAttendance()) {
-            // Commander: QR must be from their static post patrol point
-            $staticPost = null;
-            if ($attendance->post && $attendance->post->type === 'static') {
-                $staticPost = $attendance->post;
-            } else {
-                $staticPost = $attendance->project->posts()
-                    ->where('type', 'static')
-                    ->first();
-            }
+            // Commander: QR boleh dari patrol point manapun yang berada di pos STATIC dalam project
+            $staticPostIds = $attendance->project?->posts()
+                ->where('type', 'static')
+                ->pluck('id')
+                ->all() ?? [];
 
-            if (!$staticPost || $qr->patrolPoint->post_id !== $staticPost->id) {
-                $errors[] = 'QR Code tidak sesuai dengan pos static Anda';
+            if (empty($staticPostIds) || !in_array($qr->patrolPoint->post_id, $staticPostIds, true)) {
+                $errors[] = 'QR Code tidak sesuai dengan pos static di project Anda';
             }
         } else {
             // Member: QR must be from their selected post
@@ -234,12 +231,13 @@ class PatrolScanService
             );
         }
 
-        // Validate altitude if provided
-        if ($patrolPoint->altitude !== null && $scanAltitude !== null) {
+        // Validate altitude jika konfigurasi altitude di patrol point terisi dan bukan 0.
+        // Jika altitude patrol point = 0 atau null → tidak ada pembatasan ketinggian.
+        if ($patrolPoint->altitude !== null && $patrolPoint->altitude != 0 && $scanAltitude !== null) {
             $altitudeDiff = abs($patrolPoint->altitude - $scanAltitude);
             // Allow 50 meter altitude difference
             $maxAltitudeDiff = 50;
-            
+
             if ($altitudeDiff > $maxAltitudeDiff) {
                 $errors[] = sprintf(
                     'Ketinggian tidak sesuai. Ketinggian expected: %.2f m, actual: %.2f m (diff: %.2f m)',
@@ -337,7 +335,7 @@ class PatrolScanService
             }
 
             foreach ($photoFiles as $photoFile) {
-                $path = $photoFile->store('patrol-scan-photos', 'public');
+                $path = app(ImageWebpService::class)->storeAsWebp($photoFile, 'patrol-scan-photos', 80);
                 PatrolScanPhoto::create([
                     'patrol_scan_id' => $scan->id,
                     'photo' => $path,
@@ -376,7 +374,7 @@ class PatrolScanService
             }
 
             // Store photo
-            $path = $photoFile->store('patrol-scan-photos', 'public');
+            $path = app(ImageWebpService::class)->storeAsWebp($photoFile, 'patrol-scan-photos', 80);
 
             $photo = PatrolScanPhoto::create([
                 'patrol_scan_id' => $scan->id,

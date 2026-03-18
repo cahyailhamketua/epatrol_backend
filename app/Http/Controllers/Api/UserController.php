@@ -11,6 +11,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use App\Services\ImageWebpService;
 
 class UserController extends Controller
 {
@@ -145,7 +146,7 @@ class UserController extends Controller
                 Rule::unique('users')->ignore($user->id),
             ],
             'phone' => 'sometimes|nullable|string|max:20',
-            'avatar' => 'sometimes|nullable|string',
+            'avatar' => 'sometimes|nullable|image|max:2048',
             'nik' => 'sometimes|nullable|string|max:20',
             'npwp' => 'sometimes|nullable|string|max:20',
             'bpjs_kesehatan' => 'sometimes|nullable|string|max:20',
@@ -162,6 +163,20 @@ class UserController extends Controller
         // ❌ Role tidak boleh diubah lewat sini
         unset($validated['role']);
 
+        // Handle avatar upload (convert to webp)
+        if ($request->hasFile('avatar')) {
+            $service = app(ImageWebpService::class);
+
+            // Delete old avatar file if exists
+            if ($user->avatar && Storage::disk('public')->exists($user->avatar)) {
+                Storage::disk('public')->delete($user->avatar);
+            }
+
+            $validated['avatar'] = $service->storeAsWebp($request->file('avatar'), 'avatars', 80);
+        } else {
+            unset($validated['avatar']);
+        }
+
         $validated = array_filter(
             $validated,
             fn ($value) => !is_null($value) && $value !== ''
@@ -171,7 +186,12 @@ class UserController extends Controller
 
         return response()->json([
             'message' => 'User updated successfully',
-            'data' => $user,
+            'data' => array_merge(
+                $user->fresh()->toArray(),
+                [
+                    'avatar_url' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
+                ]
+            ),
         ]);
     }
 

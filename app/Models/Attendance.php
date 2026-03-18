@@ -82,27 +82,22 @@ class Attendance extends Model
 
     /**
      * Get patrol points for this attendance
-     * For commander: only 1 static point per project
+     * For commander: semua patrol point dari semua pos STATIC dalam project
      * For member: all patrol points in selected post
      */
     public function getPatrolPoints()
     {
         if ($this->isCommanderAttendance()) {
-            // Commander: patrol points from their static post (prefer attendance->post_id, fallback to first static post in project)
-            $staticPostId = null;
-            if ($this->post_id && $this->post?->type === 'static') {
-                $staticPostId = $this->post_id;
-            } else {
-                $staticPostId = $this->project?->posts()
-                    ->where('type', 'static')
-                    ->value('id');
-            }
+            $staticPostIds = $this->project?->posts()
+                ->where('type', 'static')
+                ->pluck('id')
+                ->all() ?? [];
 
-            if (!$staticPostId) {
+            if (empty($staticPostIds)) {
                 return collect();
             }
 
-            return PatrolPoint::where('post_id', $staticPostId)->get();
+            return PatrolPoint::whereIn('post_id', $staticPostIds)->get();
         }
 
         // Member: static post does not require patrol scan
