@@ -30,9 +30,4 @@ class Post extends Model
     {
         return $this->hasMany(Activity::class);
     }
-
-    public function schedules()
-    {
-        return $this->hasMany(Schedule::class);
-    }
 }

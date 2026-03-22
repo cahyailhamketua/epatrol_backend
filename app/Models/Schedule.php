@@ -11,7 +11,6 @@ class Schedule extends Model
 
     protected $fillable = [
         'project_id',
-        'post_id',
         'user_id',
         'assignment_id',
         'team_id',
@@ -21,11 +20,6 @@ class Schedule extends Model
     public function project()
     {
         return $this->belongsTo(Project::class);
-    }
-
-    public function post()
-    {
-        return $this->belongsTo(Post::class);
     }
 
     public function user()
@@ -75,8 +69,8 @@ class Schedule extends Model
         if ($this->attendance) {
             return $this->attendance->attendance_status;
         }
-        if ($this->absence && $this->absence->status === 'APPROVED') {
-            return $this->absence->absence_type;
+        if ($this->absence) {
+            return Absence::TYPE_TO_SUMMARY_KEY[$this->absence->absence_type] ?? $this->absence->absence_type;
         }
         return 'ALPHA';
     }

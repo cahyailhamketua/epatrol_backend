@@ -8,7 +8,6 @@ use App\Models\Schedule;
 use App\Models\Team;
 use App\Models\User;
 use App\Models\Assignment;
-use App\Models\Post;
 use App\Models\TeamUser;
 use App\Models\TemplateSchedule;
 use App\Services\ScheduleGeneratorService;
@@ -29,7 +28,7 @@ class ScheduleController extends Controller
     {
         $this->authorize('viewAny', Schedule::class);
 
-        $query = Schedule::with(['project', 'post', 'user', 'assignment']);
+        $query = Schedule::with(['project', 'user', 'assignment']);
 
         // Filter by project
         if ($request->has('project_id')) {
@@ -55,7 +54,6 @@ class ScheduleController extends Controller
             ->select(
                 'id',
                 'project_id',
-                'post_id',
                 'user_id',
                 'assignment_id',
                 'date',
@@ -87,7 +85,7 @@ class ScheduleController extends Controller
     {
         $this->authorize('viewAnyByProject', [Schedule::class, $project]);
 
-        $query = $project->schedules()->with(['post', 'user', 'assignment']);
+        $query = $project->schedules()->with(['user', 'assignment']);
 
         // Filter by date
         if ($request->has('date')) {
@@ -103,7 +101,6 @@ class ScheduleController extends Controller
             ->select(
                 'id',
                 'project_id',
-                'post_id',
                 'user_id',
                 'assignment_id',
                 'date',
@@ -132,7 +129,7 @@ class ScheduleController extends Controller
      */
     public function indexByUser(Request $request, User $user)
     {
-        $query = $user->schedules()->with(['project', 'post', 'assignment']);
+        $query = $user->schedules()->with(['project', 'assignment']);
 
         // Filter by specific date
         if ($request->has('date')) {
@@ -147,7 +144,6 @@ class ScheduleController extends Controller
             ->select(
                 'id',
                 'project_id',
-                'post_id',
                 'user_id',
                 'assignment_id',
                 'date',
@@ -185,7 +181,6 @@ class ScheduleController extends Controller
 
         try {
             $validated = $request->validate([
-                'post_id' => 'required|exists:posts,id',
                 'user_id' => 'required|exists:users,id',
                 'assignment_id' => 'required|exists:assignments,id',
                 'date' => 'required|date_format:Y-m-d',
@@ -197,14 +192,6 @@ class ScheduleController extends Controller
                 'status_code' => 422,
                 'errors'      => $e->errors(),
             ], 422);
-        }
-
-        // Check if post belongs to project
-        $post = Post::find($validated['post_id']);
-        if ($post->project_id !== $project->id) {
-            return response()->json([
-                'message' => 'Post does not belong to this project',
-            ], 403);
         }
 
         // Check if user belongs to project
@@ -237,7 +224,7 @@ class ScheduleController extends Controller
 
         $validated['project_id'] = $project->id;
         $schedule = Schedule::create($validated);
-        $schedule->load(['project', 'post', 'user', 'assignment']);
+        $schedule->load(['project', 'user', 'assignment']);
 
         return response()->json([
             'message' => 'Schedule created successfully',
@@ -272,7 +259,6 @@ class ScheduleController extends Controller
         try {
             $validated = $request->validate([
                 'schedules' => 'required|array|min:1',
-                'schedules.*.post_id' => 'required|exists:posts,id',
                 'schedules.*.user_id' => 'required|exists:users,id',
                 'schedules.*.assignment_id' => 'required|exists:assignments,id',
                 'schedules.*.date' => 'required|date_format:Y-m-d',
@@ -291,16 +277,6 @@ class ScheduleController extends Controller
 
         foreach ($validated['schedules'] as $index => $scheduleData) {
             try {
-                // Check if post belongs to project
-                $post = Post::find($scheduleData['post_id']);
-                if ($post->project_id !== $project->id) {
-                    $failed[] = [
-                        'index' => $index,
-                        'error' => 'Post does not belong to this project',
-                    ];
-                    continue;
-                }
-
                 // Check if user belongs to project
                 $user = User::find($scheduleData['user_id']);
                 if ($user->project_id !== $project->id) {
@@ -337,7 +313,7 @@ class ScheduleController extends Controller
 
                 $scheduleData['project_id'] = $project->id;
                 $schedule = Schedule::create($scheduleData);
-                $schedule->load(['project', 'post', 'user', 'assignment']);
+                $schedule->load(['project', 'user', 'assignment']);
                 $created[] = $schedule;
             } catch (\Exception $e) {
                 $failed[] = [
@@ -364,7 +340,7 @@ class ScheduleController extends Controller
     {
         $this->authorize('view', $schedule);
 
-        $schedule->load(['project', 'post', 'user', 'assignment']);
+        $schedule->load(['project', 'user', 'assignment']);
 
         return response()->json([
             'data' => $schedule,
@@ -430,7 +406,7 @@ class ScheduleController extends Controller
         }
 
         $schedule->update($validated);
-        $schedule->load(['project', 'post', 'user', 'assignment']);
+        $schedule->load(['project', 'user', 'assignment']);
 
         return response()->json([
             'message' => 'Schedule updated successfully',
@@ -582,11 +558,11 @@ class ScheduleController extends Controller
             $handle = fopen('php://output', 'w');
 
             // Header
-            $header = ['User', 'Team', 'Post'];
+            $header = ['User', 'Team'];
             foreach ($days as $dayMeta) {
                 $header[] = $dayMeta['date'];
             }
-            $header = array_merge($header, ['SCHEDULE', 'HK', 'OT', 'OFF', 'SK', 'SD', 'IZIN', 'CUTI', 'ALPA']);
+            $header = array_merge($header, ['SCHEDULE_COUNT', 'HK', 'OT', 'OFF', 'SAKIT', 'IZIN', 'CUTI', 'ALPA']);
             fputcsv($handle, $header);
 
             // Rows
@@ -598,7 +574,6 @@ class ScheduleController extends Controller
                 $line = [
                     $user['name'] ?? '',
                     $user['team_name'] ?? '',
-                    $user['post_name'] ?? '',
                 ];
 
                 foreach ($days as $dayMeta) {
@@ -606,12 +581,11 @@ class ScheduleController extends Controller
                     $line[] = isset($daysData[$date]) ? ($daysData[$date]['assignment'] ?? '') : '';
                 }
 
-                $line[] = $summary['SCHEDULE'] ?? 0;
+                $line[] = $summary['SCHEDULE_COUNT'] ?? 0;
                 $line[] = $summary['HK'] ?? 0;
                 $line[] = $summary['OT'] ?? 0;
                 $line[] = $summary['OFF'] ?? 0;
-                $line[] = $summary['SK'] ?? 0;
-                $line[] = $summary['SD'] ?? 0;
+                $line[] = $summary['SAKIT'] ?? 0;
                 $line[] = $summary['IZIN'] ?? 0;
                 $line[] = $summary['CUTI'] ?? 0;
                 $line[] = $summary['ALPA'] ?? 0;
@@ -1031,7 +1005,6 @@ class ScheduleController extends Controller
             Schedule::updateOrCreate(
                 [
                     'project_id' => $leaderSchedule->project_id,
-                    'post_id' => $leaderSchedule->post_id,
                     'user_id' => $user->id,
                     'date' => $leaderSchedule->date,
                 ],
