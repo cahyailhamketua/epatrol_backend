@@ -22,7 +22,7 @@ class ScheduleSheetService
         | 1️⃣ GET ALL SCHEDULES (BULK)
         |--------------------------------------------------------------------------
         */
-        $schedules = Schedule::with(['user', 'assignment', 'team', 'post'])
+        $schedules = Schedule::with(['user', 'assignment', 'team'])
             ->where('project_id', $projectId)
             ->whereBetween('date', [$startDate, $endDate])
             ->get();
@@ -39,14 +39,13 @@ class ScheduleSheetService
 
         /*
         |--------------------------------------------------------------------------
-        | 3️⃣ GET ABSENCES
+        | 3️⃣ GET ABSENCES (per schedule_id, relasi ke sel sheet)
         |--------------------------------------------------------------------------
         */
-        $absences = Absence::where('project_id', $projectId)
-            ->whereBetween('date', [$startDate, $endDate])
-            ->where('status', 'APPROVED')
-            ->get()
-            ->keyBy(fn($a) => $a->user_id . '_' . $a->date->format('Y-m-d'));
+        $absences = Absence::whereIn(
+            'schedule_id',
+            $schedules->pluck('id')
+        )->get()->keyBy('schedule_id');
 
         /*
         |--------------------------------------------------------------------------
@@ -74,8 +73,7 @@ class ScheduleSheetService
             'HK' => 0,
             'OT' => 0,
             'OFF' => 0,
-            'SK' => 0,
-            'SD' => 0,
+            'SAKIT' => 0,
             'IZIN' => 0,
             'CUTI' => 0,
             'ALPA' => 0,
@@ -85,7 +83,7 @@ class ScheduleSheetService
 
             $user = $userSchedules->first()->user;
 
-            // Summary mentah per user
+            // Agregasi internal per user (untuk menghitung summary akhir; tidak diexpose sebagai raw_summary)
             $summary = [
                 'P' => 0,
                 'M' => 0,
@@ -93,7 +91,6 @@ class ScheduleSheetService
                 'HADIR' => 0,
                 'HADIR TELAT' => 0,
                 'SAKIT' => 0,
-                'DINAS' => 0,
                 'IZIN' => 0,
                 'CUTI' => 0,
                 'ALPA' => 0,
@@ -132,20 +129,27 @@ class ScheduleSheetService
                 $key = $userId . '_' . $dateString;
 
                 $attendance = $attendances[$key] ?? null;
-                $absence    = $absences[$key] ?? null;
+                $absence    = $absences[$schedule->id] ?? null;
                 $overtime   = $overtimes[$key] ?? null;
 
-                // Attendance Summary
-                if ($attendance) {
-                    $summary[$attendance->attendance_status]++;
+                // Attendance (DINAS tidak dimasukkan ke agregat)
+                if ($attendance && $attendance->attendance_status !== 'DINAS') {
+                    $status = $attendance->attendance_status;
+                    if (! array_key_exists($status, $summary)) {
+                        $summary[$status] = 0;
+                    }
+                    $summary[$status]++;
                 }
 
-                // Absence Summary
+                // Absence Summary (C/S/I/A -> CUTI/SAKIT/IZIN/ALPA)
                 if ($absence) {
-                    if (! array_key_exists($absence->absence_type, $summary)) {
-                        $summary[$absence->absence_type] = 0;
+                    $sumKey = Absence::TYPE_TO_SUMMARY_KEY[$absence->absence_type] ?? null;
+                    if ($sumKey) {
+                        if (! array_key_exists($sumKey, $summary)) {
+                            $summary[$sumKey] = 0;
+                        }
+                        $summary[$sumKey]++;
                     }
-                    $summary[$absence->absence_type]++;
                 }
 
                 // Overtime Summary
@@ -165,7 +169,8 @@ class ScheduleSheetService
                     ] : null,
                     'absence' => $absence ? [
                         'type' => $absence->absence_type,
-                        'status' => $absence->status,
+                        'label' => $absence->label,
+                        'summary_key' => Absence::TYPE_TO_SUMMARY_KEY[$absence->absence_type] ?? null,
                     ] : null,
                     'overtime' => $overtime ? [
                         'minutes' => $overtime->planned_minutes,
@@ -184,8 +189,7 @@ class ScheduleSheetService
                 'OT' => $summary['OVERTIME_MINUTES'] ?? 0,
                 // OFF dihitung berdasarkan assignment is_off=true
                 'OFF' => $offCount,
-                'SK' => $summary['SAKIT'] ?? 0,
-                'SD' => $summary['DINAS'] ?? 0,
+                'SAKIT' => $summary['SAKIT'] ?? 0,
                 'IZIN' => $summary['IZIN'] ?? 0,
                 'CUTI' => $summary['CUTI'] ?? 0,
                 'ALPA' => $summary['ALPA'] ?? 0,
@@ -196,8 +200,7 @@ class ScheduleSheetService
             $overallSummary['HK'] += $finalSummary['HK'];
             $overallSummary['OT'] += $finalSummary['OT'];
             $overallSummary['OFF'] += $finalSummary['OFF'];
-            $overallSummary['SK'] += $finalSummary['SK'];
-            $overallSummary['SD'] += $finalSummary['SD'];
+            $overallSummary['SAKIT'] += $finalSummary['SAKIT'];
             $overallSummary['IZIN'] += $finalSummary['IZIN'];
             $overallSummary['CUTI'] += $finalSummary['CUTI'];
             $overallSummary['ALPA'] += $finalSummary['ALPA'];
@@ -208,11 +211,8 @@ class ScheduleSheetService
                     'name' => $user->full_name ?? $user->name,
                     'team_id' => $firstSchedule->team_id,
                     'team_name' => optional($firstSchedule->team)->name,
-                    'post_id' => $firstSchedule->post_id,
-                    'post_name' => optional($firstSchedule->post)->name,
                 ],
                 'summary' => $finalSummary,
-                'raw_summary' => $summary,
                 'days' => $days,
             ];
         }
