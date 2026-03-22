@@ -130,25 +130,15 @@ class AttendanceController extends Controller
 
         // Determine post
         if ($user->role === 'komandan_regu') {
-<<<<<<< Updated upstream
             // Komandan regu selalu menggunakan pos STATIC dari project (tidak bergantung schedule->post).
-=======
-            // Pos tidak lagi disimpan di jadwal; komandan memakai pos static pertama di project
->>>>>>> Stashed changes
             $post = Post::where('project_id', $user->project_id)
                 ->where('type', 'static')
                 ->orderBy('id')
                 ->first();
-<<<<<<< Updated upstream
 
             if (!$post) {
                 return response()->json([
                     'message' => 'Project Anda belum memiliki pos static.',
-=======
-            if (!$post) {
-                return response()->json([
-                    'message' => 'Project belum memiliki pos static untuk komandan regu.',
->>>>>>> Stashed changes
                     'date' => $today,
                 ], 403);
             }
@@ -349,24 +339,15 @@ class AttendanceController extends Controller
 
         // Determine post
         if ($user->role === 'komandan_regu') {
-<<<<<<< Updated upstream
             // Komandan regu selalu menggunakan pos STATIC dari project (tidak bergantung schedule->post).
-=======
->>>>>>> Stashed changes
             $post = Post::where('project_id', $user->project_id)
                 ->where('type', 'static')
                 ->orderBy('id')
                 ->first();
-<<<<<<< Updated upstream
 
             if (!$post) {
                 return response()->json([
                     'message' => 'Project Anda belum memiliki pos static.',
-=======
-            if (!$post) {
-                return response()->json([
-                    'message' => 'Project belum memiliki pos static untuk komandan regu.',
->>>>>>> Stashed changes
                     'date' => $today,
                 ], 403);
             }
