@@ -130,15 +130,25 @@ class AttendanceController extends Controller
 
         // Determine post
         if ($user->role === 'komandan_regu') {
+<<<<<<< Updated upstream
             // Komandan regu selalu menggunakan pos STATIC dari project (tidak bergantung schedule->post).
+=======
+            // Pos tidak lagi disimpan di jadwal; komandan memakai pos static pertama di project
+>>>>>>> Stashed changes
             $post = Post::where('project_id', $user->project_id)
                 ->where('type', 'static')
                 ->orderBy('id')
                 ->first();
+<<<<<<< Updated upstream
 
             if (!$post) {
                 return response()->json([
                     'message' => 'Project Anda belum memiliki pos static.',
+=======
+            if (!$post) {
+                return response()->json([
+                    'message' => 'Project belum memiliki pos static untuk komandan regu.',
+>>>>>>> Stashed changes
                     'date' => $today,
                 ], 403);
             }
@@ -339,15 +349,24 @@ class AttendanceController extends Controller
 
         // Determine post
         if ($user->role === 'komandan_regu') {
+<<<<<<< Updated upstream
             // Komandan regu selalu menggunakan pos STATIC dari project (tidak bergantung schedule->post).
+=======
+>>>>>>> Stashed changes
             $post = Post::where('project_id', $user->project_id)
                 ->where('type', 'static')
                 ->orderBy('id')
                 ->first();
+<<<<<<< Updated upstream
 
             if (!$post) {
                 return response()->json([
                     'message' => 'Project Anda belum memiliki pos static.',
+=======
+            if (!$post) {
+                return response()->json([
+                    'message' => 'Project belum memiliki pos static untuk komandan regu.',
+>>>>>>> Stashed changes
                     'date' => $today,
                 ], 403);
             }
@@ -386,17 +405,13 @@ class AttendanceController extends Controller
             ], 403);
         }
 
-        // GUARD 3: Cegah attendance jika absence APPROVED
-        $approvedAbsence = Absence::where('user_id', $user->id)
-            ->where('schedule_id', $schedule->id)
-            ->where('date', $today)
-            ->where('status', 'APPROVED')
-            ->first();
+        // GUARD 3: Cegah attendance jika ada keterangan absence pada schedule ini
+        $dayAbsence = Absence::where('schedule_id', $schedule->id)->first();
 
-        if ($approvedAbsence) {
+        if ($dayAbsence) {
             return response()->json([
-                'message' => 'Anda telah disetujui untuk ' . $approvedAbsence->absence_type . '. Tidak dapat absen masuk.',
-                'absence_type' => $approvedAbsence->absence_type,
+                'message' => 'Hari ini tercatat ' . $dayAbsence->label . '. Tidak dapat absen masuk.',
+                'absence_type' => $dayAbsence->absence_type,
             ], 403);
         }
 
@@ -512,7 +527,7 @@ class AttendanceController extends Controller
             'user_id' => $user->id,
             'schedule_id' => $schedule->id,
             'assignment_id' => $assignment->id,
-            'post_id' => $post->id,  // Anggota: dari request. Komandan: auto dari schedule (static).
+            'post_id' => $post->id,  // Anggota: dari request. Komandan: pos static pertama di project.
             'date' => $today,  // Gunakan device date
             'check_in_at' => $now,
             'checkin_lat' => $request->latitude,
@@ -1130,8 +1145,7 @@ class AttendanceController extends Controller
     {
         $post = $attendance->post;
         if (!$post && $attendance->isCommanderAttendance()) {
-            $post = $attendance->schedule?->post
-                ?? $attendance->project?->posts()->where('type', 'static')->first();
+            $post = $attendance->project?->posts()->where('type', 'static')->orderBy('id')->first();
         }
         $assignment = $attendance->assignment;
         $project = $attendance->project;

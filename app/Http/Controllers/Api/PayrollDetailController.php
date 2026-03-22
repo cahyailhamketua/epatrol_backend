@@ -111,12 +111,10 @@ class PayrollDetailController extends Controller
             }
 
             if ($absence = $schedule->absence) {
-                if ($absence->status === 'APPROVED') {
-                    $dayData['absence'] = [
-                        'absence_type' => $absence->absence_type,
-                        'status' => $absence->status,
-                    ];
-                }
+                $dayData['absence'] = [
+                    'absence_type' => $absence->absence_type,
+                    'label' => $absence->label,
+                ];
             }
 
             if (!isset($dayData['attendance']) && !isset($dayData['absence'])) {

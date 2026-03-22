@@ -84,7 +84,7 @@ class User extends Authenticatable
 
         public function absences()
         {
-            return $this->hasMany(Absence::class);
+            return $this->hasManyThrough(Absence::class, Schedule::class);
         }
 
         public function overtimeLogs()
@@ -95,11 +95,6 @@ class User extends Authenticatable
         public function payrollDetails()
         {
             return $this->hasMany(PayrollDetail::class);
-        }
-
-        public function approvedAbsences()
-        {
-            return $this->hasMany(Absence::class, 'approved_by');
         }
 
         public function approvedOvertimeLogs()

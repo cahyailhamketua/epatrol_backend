@@ -39,11 +39,6 @@ class Assignment extends Model
         return $this->hasMany(ActivityAssignmentTime::class);
     }
 
-    public function absences()
-    {
-        return $this->hasMany(Absence::class);
-    }
-
     public function overtimeLogs()
     {
         return $this->hasMany(OvertimeLog::class);

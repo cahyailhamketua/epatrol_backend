@@ -52,6 +52,7 @@ class PayrollCalculationService
             'absence_type_sakit' => 0,
             'absence_type_izin' => 0,
             'absence_type_cuti' => 0,
+            'absence_type_alpa' => 0,
             'alpha_count' => 0,
             'overtime_count' => 0,
             'overtime_total_hours' => 0,
@@ -78,10 +79,11 @@ class PayrollCalculationService
                     $metrics['overtime_count']++;
                     $metrics['overtime_total_hours'] += $attendance->overtime_minutes / 60;
                 }
-            } elseif ($absence && $absence->status === 'APPROVED') {
-                // Count absence
+            } elseif ($absence) {
+                // Count absence (C/S/I/A)
                 $metrics['absence_count']++;
-                switch ($absence->absence_type) {
+                $key = Absence::TYPE_TO_SUMMARY_KEY[$absence->absence_type] ?? '';
+                switch ($key) {
                     case 'SAKIT':
                         $metrics['absence_type_sakit']++;
                         break;
@@ -90,6 +92,9 @@ class PayrollCalculationService
                         break;
                     case 'CUTI':
                         $metrics['absence_type_cuti']++;
+                        break;
+                    case 'ALPA':
+                        $metrics['absence_type_alpa']++;
                         break;
                 }
             } else {
