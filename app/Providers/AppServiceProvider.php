@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
 use App\Models\Attendance;
+use App\Models\Absence;
 use App\Models\Activity;
 use App\Models\ActivityAssignmentTime;
 use App\Models\Assignment;
@@ -17,6 +18,7 @@ use App\Models\Schedule;
 use App\Models\User;
 use App\Models\Team;
 use App\Policies\AttendancePolicy;
+use App\Policies\AbsencePolicy;
 use App\Policies\ActivityPolicy;
 use App\Policies\ActivityAssignmentTimePolicy;
 use App\Policies\AssignmentPolicy;
@@ -49,6 +51,7 @@ class AppServiceProvider extends ServiceProvider
         // ============ REGISTER POLICIES ============
         // Map each model to its policy
         Gate::policy(Attendance::class, AttendancePolicy::class);
+        Gate::policy(Absence::class, AbsencePolicy::class);
         Gate::policy(Activity::class, ActivityPolicy::class);
         Gate::policy(ActivityAssignmentTime::class, ActivityAssignmentTimePolicy::class);
         Gate::policy(Assignment::class, AssignmentPolicy::class);

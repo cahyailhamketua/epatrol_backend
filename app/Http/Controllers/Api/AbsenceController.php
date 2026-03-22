@@ -4,44 +4,44 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Absence;
+use App\Models\Schedule;
 use App\Services\AbsenceService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 
 class AbsenceController extends Controller
 {
-    protected AbsenceService $absenceService;
-
-    public function __construct(AbsenceService $absenceService)
+    public function __construct(protected AbsenceService $absenceService)
     {
-        $this->absenceService = $absenceService;
         $this->middleware('auth:sanctum');
     }
 
     /**
      * POST /api/absences
-     * Create new absence
+     * Upsert absence untuk satu sel schedule (admin HO / admin lapangan).
+     *
+     * Body: { "schedule_id": 1, "absence_type": "C" }  // C|S|I|A
      */
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'project_id' => 'required|exists:projects,id',
-            'user_id' => 'required|exists:users,id',
             'schedule_id' => 'required|exists:schedules,id',
-            'assignment_id' => 'required|exists:assignments,id',
-            'date' => 'required|date',
-            'absence_type' => 'required|in:SAKIT,IZIN,CUTI',
-            'attachment_url' => 'nullable|url',
-            'notes' => 'nullable|string',
+            'absence_type' => 'required|in:C,S,I,A',
         ]);
 
+        $schedule = Schedule::with('project')->findOrFail($validated['schedule_id']);
+        $this->authorize('manageForProject', [Absence::class, $schedule->project]);
+
         try {
-            $absence = $this->absenceService->createAbsence($validated);
+            $absence = $this->absenceService->upsertForSchedule(
+                $validated['schedule_id'],
+                $validated['absence_type']
+            );
 
             return response()->json([
                 'success' => true,
-                'message' => 'Absence created successfully',
-                'data' => $absence->load(['user', 'assignment', 'schedule']),
+                'message' => 'Absence saved',
+                'data' => $absence->load('schedule'),
             ], Response::HTTP_CREATED);
         } catch (\Exception $e) {
             return response()->json([
@@ -52,36 +52,69 @@ class AbsenceController extends Controller
     }
 
     /**
+     * PATCH /api/absences/{absence}
+     * Ubah tipe absence (masih 1 baris per schedule).
+     */
+    public function update(Request $request, Absence $absence)
+    {
+        $absence->load('schedule.project');
+        $this->authorize('manageForProject', [Absence::class, $absence->schedule->project]);
+
+        $validated = $request->validate([
+            'absence_type' => 'required|in:C,S,I,A',
+        ]);
+
+        $absence->update(['absence_type' => $validated['absence_type']]);
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Absence updated',
+            'data' => $absence->fresh()->load('schedule'),
+        ]);
+    }
+
+    /**
      * GET /api/absences
-     * List absences with filters
+     * Filter: project_id (wajib untuk scope), user_id, month YYYY-MM, absence_type
      */
     public function index(Request $request)
     {
-        $query = Absence::query();
+        $this->authorize('viewAny', Absence::class);
 
-        if ($request->has('project_id')) {
-            $query->where('project_id', $request->project_id);
+        $validated = $request->validate([
+            'project_id' => 'required|exists:projects,id',
+            'user_id' => 'sometimes|exists:users,id',
+            'month' => 'sometimes|date_format:Y-m',
+            'absence_type' => 'sometimes|in:C,S,I,A',
+            'per_page' => 'sometimes|integer|min:1|max:100',
+        ]);
+
+        $project = \App\Models\Project::findOrFail($validated['project_id']);
+        $this->authorize('viewForProject', [Absence::class, $project]);
+
+        $query = Absence::query()
+            ->with(['schedule.user', 'schedule.assignment'])
+            ->join('schedules', 'schedules.id', '=', 'absences.schedule_id')
+            ->where('schedules.project_id', $validated['project_id']);
+
+        if (! empty($validated['user_id'])) {
+            $query->where('schedules.user_id', $validated['user_id']);
         }
 
-        if ($request->has('user_id')) {
-            $query->where('user_id', $request->user_id);
+        if (! empty($validated['month'])) {
+            $start = \Carbon\Carbon::parse($validated['month'] . '-01')->startOfMonth();
+            $end = \Carbon\Carbon::parse($validated['month'] . '-01')->endOfMonth();
+            $query->whereBetween('schedules.date', [$start, $end]);
         }
 
-        if ($request->has('date')) {
-            $query->where('date', $request->date);
+        if (! empty($validated['absence_type'])) {
+            $query->where('absences.absence_type', $validated['absence_type']);
         }
 
-        if ($request->has('status')) {
-            $query->where('status', $request->status);
-        }
-
-        if ($request->has('absence_type')) {
-            $query->where('absence_type', $request->absence_type);
-        }
-
-        $absences = $query->with(['user', 'assignment', 'schedule', 'approvedBy'])
-            ->orderBy('date', 'desc')
-            ->paginate($request->per_page ?? 50);
+        $absences = $query
+            ->select('absences.*')
+            ->orderBy('schedules.date', 'desc')
+            ->paginate($validated['per_page'] ?? 50);
 
         return response()->json([
             'success' => true,
@@ -90,95 +123,51 @@ class AbsenceController extends Controller
     }
 
     /**
-     * GET /api/absences/{id}
-     * Get single absence detail
+     * GET /api/absences/{absence}
      */
     public function show(Absence $absence)
     {
+        $absence->load(['schedule.project', 'schedule.user', 'schedule.assignment']);
+        $this->authorize('viewForProject', [Absence::class, $absence->schedule->project]);
+
         return response()->json([
             'success' => true,
-            'data' => $absence->load(['user', 'assignment', 'schedule', 'approvedBy']),
+            'data' => $absence,
         ]);
     }
 
     /**
-     * PATCH /api/absences/{id}/approve
-     * Approve absence
-     */
-    public function approve(Request $request, Absence $absence)
-    {
-        $validated = $request->validate([
-            'approved_by' => 'required|exists:users,id',
-            'notes' => 'nullable|string',
-        ]);
-
-        try {
-            $absence = $this->absenceService->approveAbsence(
-                $absence,
-                $validated['approved_by'],
-                $validated['notes'] ?? null
-            );
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Absence approved',
-                'data' => $absence->load(['approvedBy']),
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], Response::HTTP_BAD_REQUEST);
-        }
-    }
-
-    /**
-     * PATCH /api/absences/{id}/reject
-     * Reject absence
-     */
-    public function reject(Request $request, Absence $absence)
-    {
-        $validated = $request->validate([
-            'rejection_reason' => 'required|string',
-        ]);
-
-        try {
-            $absence = $this->absenceService->rejectAbsence(
-                $absence,
-                $validated['rejection_reason']
-            );
-
-            return response()->json([
-                'success' => true,
-                'message' => 'Absence rejected',
-                'data' => $absence,
-            ]);
-        } catch (\Exception $e) {
-            return response()->json([
-                'success' => false,
-                'message' => $e->getMessage(),
-            ], Response::HTTP_BAD_REQUEST);
-        }
-    }
-
-    /**
-     * DELETE /api/absences/{id}
-     * Delete absence (only if PENDING)
+     * DELETE /api/absences/{absence}
+     * Hapus keterangan absence pada sel tersebut.
      */
     public function destroy(Absence $absence)
     {
-        if ($absence->status !== 'PENDING') {
-            return response()->json([
-                'success' => false,
-                'message' => 'Hanya PENDING absence yang bisa didelete',
-            ], Response::HTTP_BAD_REQUEST);
-        }
+        $absence->load('schedule.project');
+        $this->authorize('manageForProject', [Absence::class, $absence->schedule->project]);
 
         $absence->delete();
 
         return response()->json([
             'success' => true,
             'message' => 'Absence deleted',
+        ]);
+    }
+
+    /**
+     * DELETE /api/schedules/{schedule}/absence
+     * Alternatif hapus by schedule_id (tanpa id absence).
+     */
+    public function destroyBySchedule(Schedule $schedule)
+    {
+        $schedule->load('project');
+        $this->authorize('manageForProject', [Absence::class, $schedule->project]);
+
+        $deleted = Absence::where('schedule_id', $schedule->id)->delete();
+
+        return response()->json([
+            'success' => true,
+            'message' => $deleted ? 'Absence deleted' : 'No absence for this schedule',
+            'deleted' => (bool) $deleted,
         ]);
     }
 }

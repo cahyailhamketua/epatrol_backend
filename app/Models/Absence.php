@@ -10,77 +10,32 @@ class Absence extends Model
     use HasFactory;
 
     protected $fillable = [
-        'project_id',
-        'user_id',
         'schedule_id',
-        'assignment_id',
-        'date',
         'absence_type',
-        'attachment_url',
-        'status',
-        'approved_by',
-        'approved_at',
-        'rejection_reason',
     ];
 
-    protected $casts = [
-        'date' => 'date',
-        'approved_at' => 'datetime',
+    /** Map huruf ke key summary / laporan */
+    public const TYPE_TO_SUMMARY_KEY = [
+        'C' => 'CUTI',
+        'S' => 'SAKIT',
+        'I' => 'IZIN',
+        'A' => 'ALPA',
     ];
-
-    public function project()
-    {
-        return $this->belongsTo(Project::class);
-    }
-
-    public function user()
-    {
-        return $this->belongsTo(User::class);
-    }
 
     public function schedule()
     {
         return $this->belongsTo(Schedule::class);
     }
 
-    public function assignment()
+    /** Label singkat untuk API / frontend */
+    public function getLabelAttribute(): string
     {
-        return $this->belongsTo(Assignment::class);
-    }
-
-    public function approvedBy()
-    {
-        return $this->belongsTo(User::class, 'approved_by');
-    }
-
-    // Scopes
-    public function scopeApproved($query)
-    {
-        return $query->where('status', 'APPROVED');
-    }
-
-    public function scopePending($query)
-    {
-        return $query->where('status', 'PENDING');
-    }
-
-    public function scopeRejected($query)
-    {
-        return $query->where('status', 'REJECTED');
-    }
-
-    public function scopeByDate($query, $date)
-    {
-        return $query->where('date', $date);
-    }
-
-    public function scopeByUser($query, $userId)
-    {
-        return $query->where('user_id', $userId);
-    }
-
-    public function scopeByProject($query, $projectId)
-    {
-        return $query->where('project_id', $projectId);
+        return match ($this->absence_type) {
+            'C' => 'Cuti',
+            'S' => 'Sakit',
+            'I' => 'Izin',
+            'A' => 'Alfa',
+            default => $this->absence_type,
+        };
     }
 }

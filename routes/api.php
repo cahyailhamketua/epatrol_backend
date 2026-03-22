@@ -14,6 +14,7 @@ use App\Http\Controllers\Api\ActivityController;
 use App\Http\Controllers\Api\ActivityAssignmentTimeController;
 use App\Http\Controllers\Api\PatrolPointController;
 use App\Http\Controllers\Api\ScheduleController;
+use App\Http\Controllers\Api\AbsenceController;
 use App\Http\Controllers\Api\AttendanceController;
 use App\Http\Controllers\Api\PatrolScanController;
 use App\Http\Controllers\Api\QrCodeController;
@@ -228,6 +229,16 @@ Route::middleware('auth:sanctum')->group(function () {
     
     // View attendance detail
     Route::get('/attendances/{attendance}', [AttendanceController::class, 'show']);
+});
+
+// Absence routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::post('/absences', [AbsenceController::class, 'store']);
+    Route::get('/absences', [AbsenceController::class, 'index']);
+    Route::get('/absences/{absence}', [AbsenceController::class, 'show']);
+    Route::patch('/absences/{absence}', [AbsenceController::class, 'update']);
+    Route::delete('/absences/{absence}', [AbsenceController::class, 'destroy']);
+    Route::delete('/schedules/{schedule}/absence', [AbsenceController::class, 'destroyBySchedule']);
 });
 
 // Patrol Scan routes
