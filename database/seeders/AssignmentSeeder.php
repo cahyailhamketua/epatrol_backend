@@ -17,6 +17,7 @@ class AssignmentSeeder extends Seeder
                 'code' => 'p',
                 'start_time' => '06:00',
                 'end_time' => '14:00',
+                'is_off' => 0,
             ],
             [
                 'id' => 2,
@@ -25,6 +26,7 @@ class AssignmentSeeder extends Seeder
                 'code' => 'm',
                 'start_time' => '22:00',
                 'end_time' => '06:00',
+                'is_off' => 0,
             ],
             [
                 'id' => 3,
@@ -33,6 +35,7 @@ class AssignmentSeeder extends Seeder
                 'code' => 'p',
                 'start_time' => '07:00',
                 'end_time' => '15:00',
+                'is_off' => 0,
             ],
             [
                 'id' => 4,
@@ -41,6 +44,16 @@ class AssignmentSeeder extends Seeder
                 'code' => 'm',
                 'start_time' => '22:00',
                 'end_time' => '06:00',
+                'is_off' => 0,
+            ],
+            [
+                'id' => 5,
+                'project_id' => 1,
+                'name' => 'Assignment Off',
+                'code' => 'o',
+                'start_time' => '00:00',
+                'end_time' => '00:00',
+                'is_off' => 1,
             ],
         ]);
     }
