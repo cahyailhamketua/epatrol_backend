@@ -20,6 +20,12 @@ class DatabaseSeeder extends Seeder
 
         ActivitySeeder::class,
         ActivityAssignmentTimeSeeder::class,
+
+        TeamSeeder::class,
+        TeamUserSeeder::class,
+        TemplateScheduleSeeder::class,
+        ScheduleSeeder::class,
+        AbsenceSeeder::class,
     ]);
 }
 
