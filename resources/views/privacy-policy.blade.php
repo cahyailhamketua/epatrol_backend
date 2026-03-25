@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Kebijakan Privasi ePatrol</title>
+    <title>Kebijakan Privasi operating patrolling system</title>
     <style>
         :root {
             color-scheme: light;
@@ -53,7 +53,7 @@
 </head>
 <body>
     <main class="container">
-        <h1>Kebijakan Privasi ePatrol</h1>
+        <h1>Kebijakan Privasi operating patrolling system</h1>
         <p class="updated">Terakhir diperbarui: 21 Maret 2026</p>
 
         <p>
@@ -140,7 +140,7 @@
             <p><strong>Email:</strong> bgeodev@gmail.com</p>
         </div>
 
-        <p class="muted">Dengan menggunakan layanan ePatrol, Anda dianggap telah membaca dan memahami Kebijakan Privasi ini.</p>
+        <p class="muted">Dengan menggunakan layanan operating patrolling system<, Anda dianggap telah membaca dan memahami Kebijakan Privasi ini.</p>
     </main>
 </body>
 </html>
