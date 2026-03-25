@@ -1059,41 +1059,41 @@ class AttendanceController extends Controller
         // Verify all patrol scans completed sebelum check-out
         // - Member: wajib menyelesaikan semua patrol point pada post yang dipakai attendance.
         // - Komandan regu: wajib menyelesaikan semua patrol point dari semua post STATIC di project.
-        if ($attendance->isCommanderAttendance()) {
-            $staticPostIds = $attendance->project?->posts()
-                ->where('type', 'static')
-                ->pluck('id')
-                ->all() ?? [];
+        // if ($attendance->isCommanderAttendance()) {
+        //     $staticPostIds = $attendance->project?->posts()
+        //         ->where('type', 'static')
+        //         ->pluck('id')
+        //         ->all() ?? [];
 
-            $totalPoints = empty($staticPostIds)
-                ? 0
-                : PatrolPoint::whereIn('post_id', $staticPostIds)->count();
+        //     $totalPoints = empty($staticPostIds)
+        //         ? 0
+        //         : PatrolPoint::whereIn('post_id', $staticPostIds)->count();
 
-            if ($totalPoints > 0) {
-                $scannedPoints = PatrolScan::where('attendance_id', $attendance->id)->count();
+        //     if ($totalPoints > 0) {
+        //         $scannedPoints = PatrolScan::where('attendance_id', $attendance->id)->count();
 
-                if ($scannedPoints < $totalPoints) {
-                    return response()->json([
-                        'message' => 'Anda harus menyelesaikan semua scan titik patroli.',
-                        'scanned' => $scannedPoints,
-                        'total' => $totalPoints,
-                    ], 403);
-                }
-            }
-        } elseif ($post) {
-            $totalPoints = PatrolPoint::where('post_id', $post->id)->count();
-            if ($totalPoints > 0) {
-                $scannedPoints = PatrolScan::where('attendance_id', $attendance->id)->count();
+        //         if ($scannedPoints < $totalPoints) {
+        //             return response()->json([
+        //                 'message' => 'Anda harus menyelesaikan semua scan titik patroli.',
+        //                 'scanned' => $scannedPoints,
+        //                 'total' => $totalPoints,
+        //             ], 403);
+        //         }
+        //     }
+        // } elseif ($post) {
+        //     $totalPoints = PatrolPoint::where('post_id', $post->id)->count();
+        //     if ($totalPoints > 0) {
+        //         $scannedPoints = PatrolScan::where('attendance_id', $attendance->id)->count();
 
-                if ($scannedPoints < $totalPoints) {
-                    return response()->json([
-                        'message' => 'Anda harus menyelesaikan semua scan titik patroli.',
-                        'scanned' => $scannedPoints,
-                        'total' => $totalPoints,
-                    ], 403);
-                }
-            }
-        }
+        //         if ($scannedPoints < $totalPoints) {
+        //             return response()->json([
+        //                 'message' => 'Anda harus menyelesaikan semua scan titik patroli.',
+        //                 'scanned' => $scannedPoints,
+        //                 'total' => $totalPoints,
+        //             ], 403);
+        //         }
+        //     }
+        // }
 
         // Update computed_status (overtimeMinutes dan overtimeStatus sudah dihitung di atas)
         $computedStatus = $attendance->computed_status; // Start dari status check-in
