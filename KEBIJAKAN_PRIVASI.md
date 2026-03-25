@@ -1,8 +1,8 @@
-# Kebijakan Privasi ePatrol
+# Kebijakan Privasi operating patrolling system
 
 Terakhir diperbarui: 21 Maret 2026
 
-Kami di ePatrol menghargai privasi Anda. Kebijakan Privasi ini menjelaskan bagaimana kami mengumpulkan, menggunakan, menyimpan, dan melindungi informasi pribadi Anda saat Anda menggunakan layanan kami.
+Kami di operating patrolling system menghargai privasi Anda. Kebijakan Privasi ini menjelaskan bagaimana kami mengumpulkan, menggunakan, menyimpan, dan melindungi informasi pribadi Anda saat Anda menggunakan layanan kami.
 
 ## 1. Perlindungan Data Anak
 
@@ -20,7 +20,16 @@ Kami dapat mengumpulkan informasi berikut:
 - Informasi pendaftaran pengguna yang dikumpulkan melalui mekanisme pendaftaran dan/atau admin, termasuk proses verifikasi dan validasi manual.
 - Informasi penggunaan seperti alamat IP, jenis perangkat, sistem operasi, browser, halaman/fitur yang diakses, serta waktu akses.
 - Informasi tambahan yang Anda berikan secara sukarela melalui formulir, survei, atau komunikasi langsung.
-- Informasi lokasi dan dokumentasi visual (misalnya foto) yang diperlukan untuk fitur operasional aplikasi seperti absensi dan patroli.
+- Koordinat lokasi (mis. GPS latitude/longitude) dan dokumentasi visual (misalnya foto/selfie) yang diperlukan untuk fitur operasional aplikasi seperti absensi dan patroli.
+
+## 2A. Izin Lokasi dan Kamera
+
+Untuk menggunakan fitur absensi dan patroli, aplikasi akan meminta izin akses:
+
+- **Lokasi**: untuk membaca koordinat GPS (latitude/longitude) saat melakukan check-in/check-out serta saat memvalidasi QR code/titik patroli.
+- **Kamera (atau akses galeri foto)**: untuk mengambil/mengunggah foto yang digunakan sebagai verifikasi (contoh: foto selfie) dan dokumentasi patroli (contoh: foto pendukung pada saat scan titik patroli/QR).
+
+Jika Anda menolak izin tersebut, fitur terkait mungkin tidak dapat digunakan atau akan gagal memproses data.
 
 ## 3. Cara Kami Menggunakan Informasi
 

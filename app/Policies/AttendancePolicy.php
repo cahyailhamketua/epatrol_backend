@@ -2,9 +2,9 @@
 
 namespace App\Policies;
 
-use App\Models\User;
 use App\Models\Attendance;
 use App\Models\Project;
+use App\Models\User;
 
 class AttendancePolicy
 {
@@ -76,8 +76,8 @@ class AttendancePolicy
      */
     public function create(User $user): bool
     {
-        // Hanya anggota & komandan_regu bisa check-in
-        return in_array($user->role, ['komandan_regu', 'anggota']);
+        // Komandan regu, anggota, dan admin_project bisa check-in
+        return in_array($user->role, ['komandan_regu', 'anggota', 'admin_project'], true);
     }
 
     /**
@@ -91,7 +91,7 @@ class AttendancePolicy
         }
 
         // Hanya yang sudah check-in bisa check-out
-        if (!$attendance->check_in_at) {
+        if (! $attendance->check_in_at) {
             return false;
         }
 
@@ -109,7 +109,7 @@ class AttendancePolicy
         }
 
         // Hanya bisa scan kalau sudah check-in
-        if (!$attendance->check_in_at) {
+        if (! $attendance->check_in_at) {
             return false;
         }
 
@@ -132,7 +132,7 @@ class AttendancePolicy
             return (bool) $user->project_id;
         }
 
-        // HO boleh (opsional) - tetap akan dibatasi di controller berdasarkan project_id user.
+        // HO boleh melihat progress lintas project.
         if ($user->role === 'ho') {
             return (bool) $user->organization_id;
         }

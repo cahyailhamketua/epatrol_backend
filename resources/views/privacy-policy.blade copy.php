@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Kebijakan Privasi ePatrol</title>
+    <title>Kebijakan Privasi operating patrolling system</title>
     <style>
         :root {
             color-scheme: light;
@@ -53,11 +53,11 @@
 </head>
 <body>
     <main class="container">
-        <h1>Kebijakan Privasi ePatrol</h1>
+        <h1>Kebijakan Privasi operating patrolling system</h1>
         <p class="updated">Terakhir diperbarui: 21 Maret 2026</p>
 
         <p>
-            Kami di ePatrol menghargai privasi Anda. Kebijakan Privasi ini menjelaskan bagaimana kami
+            Kami di operating patrolling system menghargai privasi Anda. Kebijakan Privasi ini menjelaskan bagaimana kami
             mengumpulkan, menggunakan, menyimpan, dan melindungi informasi pribadi Anda saat Anda menggunakan layanan kami.
         </p>
 
@@ -78,8 +78,20 @@
             <li>Informasi pendaftaran pengguna melalui mekanisme pendaftaran/admin termasuk verifikasi manual.</li>
             <li>Informasi penggunaan seperti IP address, jenis perangkat, browser, dan waktu akses.</li>
             <li>Informasi tambahan dari formulir, survei, atau komunikasi langsung.</li>
-            <li>Informasi lokasi dan dokumentasi visual (misalnya foto) untuk fitur absensi/patroli.</li>
+            <li>Koordinat lokasi (mis. GPS latitude/longitude) dan dokumentasi visual (misalnya foto/selfie) untuk fitur absensi/patroli.</li>
         </ul>
+
+        <h2>2A. Izin Lokasi dan Kamera</h2>
+        <p>
+            Untuk menggunakan fitur absensi dan patroli, aplikasi akan meminta izin akses:
+        </p>
+        <ul>
+            <li><strong>Lokasi</strong>: untuk membaca koordinat GPS (latitude/longitude) saat check-in/check-out serta saat memvalidasi QR code/titik patroli.</li>
+            <li><strong>Kamera (atau akses galeri foto)</strong>: untuk mengambil/mengunggah foto yang digunakan sebagai verifikasi (contoh: foto selfie) dan dokumentasi patroli (contoh: foto pendukung pada saat scan titik patroli/QR).</li>
+        </ul>
+        <p>
+            Jika Anda menolak izin tersebut, fitur terkait mungkin tidak dapat digunakan atau gagal memproses data.
+        </p>
 
         <h2>3. Cara Kami Menggunakan Informasi</h2>
         <ul>
@@ -140,7 +152,7 @@
             <p><strong>Email:</strong> bgeodev@gmail.com</p>
         </div>
 
-        <p class="muted">Dengan menggunakan layanan ePatrol, Anda dianggap telah membaca dan memahami Kebijakan Privasi ini.</p>
+        <p class="muted">Dengan menggunakan layanan operating patrolling system, Anda dianggap telah membaca dan memahami Kebijakan Privasi ini.</p>
     </main>
 </body>
 </html>
