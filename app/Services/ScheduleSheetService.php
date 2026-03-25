@@ -140,7 +140,10 @@ class ScheduleSheetService
                     : $assignmentCode;
 
                 // Attendance (DINAS tidak dimasukkan ke agregat)
-                if ($attendance && $attendance->attendance_status !== 'DINAS') {
+                // Jika jadwal OFF tapi user hadir sebagai overtime (ada overtime log),
+                // maka jangan dihitung sebagai HK/hari kerja, hanya masuk ke OT.
+                // Requirement: jika overtime ada pada sel ini, jangan hitung HK/hari kerja.
+                if ($attendance && $attendance->attendance_status !== 'DINAS' && ! $overtime) {
                     $status = $attendance->attendance_status;
                     if (! array_key_exists($status, $summary)) {
                         $summary[$status] = 0;
