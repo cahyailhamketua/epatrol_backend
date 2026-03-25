@@ -249,6 +249,33 @@ class AttendanceController extends Controller
             }
         }
 
+        if ($assignment->isOffDuty()) {
+            $offDayOvertime = app(OffDayOvertimeService::class);
+            $workInterval = $offDayOvertime->resolveWorkAssignmentByTime(
+                $schedule->project_id,
+                $now->copy()->setTimezone($projectTimezone)
+            );
+            $workAssignment = $workInterval['assignment'] ?? null;
+
+            if (! $workAssignment) {
+                return response()->json([
+                    'message' => 'Jadwal hari ini OFF. Tidak ada assignment kerja yang cocok dengan jam sekarang di project ini.',
+                    'time' => $now->copy()->setTimezone($projectTimezone)->format('H:i:s'),
+                    'timezone' => $projectTimezone,
+                ], 403);
+            }
+
+            $computedStatus = 'HADIR LEMBUR';
+            $workGracePeriod = $workAssignment->grace_period ?? 15;
+            $workStartUtc = $workInterval['start']->copy()->setTimezone('UTC');
+            $graceDeadlineUtc = $workStartUtc->copy()->addMinutes($workGracePeriod);
+
+            if ($now->isAfter($graceDeadlineUtc)) {
+                $lateMinutes = $now->diffInMinutes($workStartUtc);
+                $computedStatus = 'HADIR TELAT LEMBUR';
+            }
+        }
+
         $todayCarbon = Carbon::parse($today);
         $dateFormatted = $todayCarbon->translatedFormat('d F Y');
         $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
@@ -269,7 +296,8 @@ class AttendanceController extends Controller
             'distance' => round($distance, 2).' meters',
             'allowed_radius' => $globalRadius.' meters',
             'is_off_day' => $isOffDay,
-            'requires_overtime_work_code' => $isOffDay,
+            // overtime_work_code untuk OFF dipilih otomatis berdasarkan current_time
+            'requires_overtime_work_code' => false,
             'post' => $post ? [
                 'id' => $post->id,
                 'name' => $post->name,
@@ -443,20 +471,19 @@ class AttendanceController extends Controller
 
         $offDayOvertime = app(OffDayOvertimeService::class);
         $workAssignment = null;
+        $workAssignmentInterval = null;
         if ($isOffDutyAssignment) {
-            $workCode = $request->input('overtime_work_code');
-            if (! $workCode) {
-                return response()->json([
-                    'message' => 'Jadwal hari ini OFF. Kirim overtime_work_code untuk shift yang Anda kerjakan lembur (mis. P atau M).',
-                    'requires_overtime_work_code' => true,
-                ], 422);
-            }
-            $workAssignment = $offDayOvertime->resolveWorkAssignment($schedule->project_id, $workCode);
+            // AUTO pick assignment kerja berdasarkan waktu device (project timezone)
+            $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
+            $workAssignmentInterval = $offDayOvertime->resolveWorkAssignmentByTime($schedule->project_id, $nowInProjectTz);
+            $workAssignment = $workAssignmentInterval['assignment'] ?? null;
+
             if (! $workAssignment) {
                 return response()->json([
-                    'message' => 'Kode shift lembur tidak valid. Pilih assignment kerja (non-OFF) di project ini.',
-                    'overtime_work_code' => $workCode,
-                ], 422);
+                    'message' => 'Jadwal hari ini OFF. Tidak ada assignment kerja yang cocok dengan jam sekarang di project ini.',
+                    'time' => $nowInProjectTz->format('H:i:s'),
+                    'timezone' => $projectTimezone,
+                ], 403);
             }
         }
         $startTime = null;
@@ -561,9 +588,22 @@ class AttendanceController extends Controller
             }
         }
 
-        // Untuk OFF day overtime, status langsung dianggap LEMBUR saat check-in.
+        // Untuk OFF day overtime, status & late dihitung dari assignment kerja yang dipilih otomatis.
         if ($isOffDutyAssignment) {
-            $computedStatus = 'HADIR LEMBUR';
+            $workGracePeriod = $workAssignment->grace_period ?? 15;
+
+            // start/end interval dalam project tz -> konversi ke UTC untuk hitung
+            $workStartUtc = $workAssignmentInterval['start']->copy()->setTimezone('UTC');
+
+            $graceDeadlineUtc = $workStartUtc->copy()->addMinutes($workGracePeriod);
+
+            if ($now->isAfter($graceDeadlineUtc)) {
+                $lateMinutes = $now->diffInMinutes($workStartUtc);
+                $attendanceStatus = 'HADIR TELAT';
+                $computedStatus = 'HADIR TELAT LEMBUR';
+            } else {
+                $computedStatus = 'HADIR LEMBUR';
+            }
         }
 
         // Handle selfie photo upload (admin_project tidak perlu selfie)
