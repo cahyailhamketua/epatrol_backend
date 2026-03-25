@@ -39,9 +39,14 @@ class Assignment extends Model
         return $this->hasMany(ActivityAssignmentTime::class);
     }
 
-    public function overtimeLogs()
+    public function overtimeLogsAsScheduled()
     {
-        return $this->hasMany(OvertimeLog::class);
+        return $this->hasMany(OvertimeLog::class, 'scheduled_assignment_id');
+    }
+
+    public function overtimeLogsAsWork()
+    {
+        return $this->hasMany(OvertimeLog::class, 'work_assignment_id');
     }
 
     public function payrollDetails()

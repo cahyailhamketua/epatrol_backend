@@ -15,32 +15,28 @@ return new class extends Migration
             $table->id();
             $table->foreignId('project_id')->constrained()->cascadeOnDelete();
             $table->foreignId('user_id')->constrained()->cascadeOnDelete();
-            $table->foreignId('assignment_id')->constrained()->cascadeOnDelete();
+
+            // Asal jadwal OFF (schedule assignment)
             $table->foreignId('schedule_id')->constrained()->cascadeOnDelete();
-            
+
+            // Bukti dari attendance (created saat check-in)
+            $table->foreignId('attendance_id')->constrained()->cascadeOnDelete();
+
+            // Assignment OFF (scheduled) dan assignment kerja lembur (P/M)
+            $table->foreignId('scheduled_assignment_id')->constrained('assignments')->cascadeOnDelete();
+            $table->foreignId('work_assignment_id')->constrained('assignments')->cascadeOnDelete();
+
             $table->date('date');
-            $table->enum('overtime_type', ['OFF_DUTY', 'EXTEND_SHIFT'])->default('EXTEND_SHIFT');
-            
-            // Planned time
-            $table->time('planned_start_time');
-            $table->time('planned_end_time');
-            $table->integer('planned_minutes');
-            
-            // Actual time (dari attendance)
-            $table->time('actual_start_time')->nullable();
-            $table->time('actual_end_time')->nullable();
-            $table->integer('actual_minutes')->nullable();
-            
-            $table->enum('status', ['PENDING', 'APPROVED', 'REJECTED', 'COMPLETED'])->default('PENDING');
-            $table->foreignId('approved_by')->nullable()->constrained('users')->nullOnDelete();
-            $table->timestamp('approved_at')->nullable();
-            
-            $table->text('notes')->nullable();
-            
+            $table->string('display_code', 16); // contoh: O/P, O/M
+            // Tidak diperlukan untuk business logic sekarang (OT dihitung per shift).
+            $table->unsignedInteger('minutes')->default(0);
+
             $table->timestamps();
-            
-            $table->index(['user_id', 'date']);
+
+            $table->unique('schedule_id');
+            $table->unique('attendance_id');
             $table->index(['project_id', 'date']);
+            $table->index(['user_id', 'date']);
         });
     }
 

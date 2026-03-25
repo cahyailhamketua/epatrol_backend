@@ -13,7 +13,9 @@ use App\Models\PatrolScan;
 use App\Models\PatrolPoint;
 use App\Models\Absence;
 use App\Models\OvertimeLog;
+use App\Services\OffDayOvertimeService;
 use App\Services\PatrolScanService;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use Carbon\Carbon;
@@ -236,6 +238,8 @@ class AttendanceController extends Controller
         $dateFormatted = $todayCarbon->translatedFormat('d F Y');
         $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
 
+        $isOffDay = $assignment->isOffDuty();
+
         return response()->json([
             'message' => 'Waktu check-in valid. Silakan ambil foto selfie.',
             'can_checkin' => true,
@@ -247,6 +251,8 @@ class AttendanceController extends Controller
             'late_minutes' => $lateMinutes,
             'distance' => round($distance, 2) . ' meters',
             'allowed_radius' => $globalRadius . ' meters',
+            'is_off_day' => $isOffDay,
+            'requires_overtime_work_code' => $isOffDay,
             'post' => [
                 'id' => $post->id,
                 'name' => $post->name,
@@ -397,6 +403,25 @@ class AttendanceController extends Controller
         }
 
         $isOffDutyAssignment = $assignment->isOffDuty(); // termasuk code 'O'
+
+        $offDayOvertime = app(OffDayOvertimeService::class);
+        $workAssignment = null;
+        if ($isOffDutyAssignment) {
+            $workCode = $request->input('overtime_work_code');
+            if (! $workCode) {
+                return response()->json([
+                    'message' => 'Jadwal hari ini OFF. Kirim overtime_work_code untuk shift yang Anda kerjakan lembur (mis. P atau M).',
+                    'requires_overtime_work_code' => true,
+                ], 422);
+            }
+            $workAssignment = $offDayOvertime->resolveWorkAssignment($schedule->project_id, $workCode);
+            if (! $workAssignment) {
+                return response()->json([
+                    'message' => 'Kode shift lembur tidak valid. Pilih assignment kerja (non-OFF) di project ini.',
+                    'overtime_work_code' => $workCode,
+                ], 422);
+            }
+        }
         $startTime = null;
         if (!$isOffDutyAssignment) {
             $startTime = Carbon::createFromFormat('Y-m-d H:i:s', $today . ' ' . $assignment->start_time, $projectTimezone);
@@ -498,28 +523,55 @@ class AttendanceController extends Controller
             }
         }
 
+        // Untuk OFF day overtime, status langsung dianggap LEMBUR saat check-in.
+        if ($isOffDutyAssignment) {
+            $computedStatus = 'HADIR LEMBUR';
+        }
+
         // Handle selfie photo upload
         $imageService = app(ImageWebpService::class);
         $selfiePath = $imageService->storeAsWebp($request->file('selfie_photo'), 'attendances/selfies', 80);
 
-        // Create attendance
-        $attendance = Attendance::create([
-            'project_id' => $schedule->project_id,
-            'user_id' => $user->id,
-            'schedule_id' => $schedule->id,
-            'assignment_id' => $assignment->id,
-            'post_id' => $post->id,  // Anggota: dari request. Komandan: pos static pertama di project.
-            'date' => $today,  // Gunakan device date
-            'check_in_at' => $now,
-            'checkin_lat' => $request->latitude,
-            'checkin_lng' => $request->longitude,
-            'attendance_status' => $attendanceStatus,
-            'computed_status' => $computedStatus,
-            'late_minutes' => $lateMinutes,
-            'overtime_minutes' => 0,
-            'overtime_status' => 'NONE',
-            'selfie_photo_path' => $selfiePath,
-        ]);
+        $attendance = DB::transaction(function () use (
+            $schedule,
+            $assignment,
+            $user,
+            $post,
+            $today,
+            $now,
+            $request,
+            $attendanceStatus,
+            $computedStatus,
+            $lateMinutes,
+            $selfiePath,
+            $isOffDutyAssignment,
+            $workAssignment,
+            $offDayOvertime
+        ) {
+            $created = Attendance::create([
+                'project_id' => $schedule->project_id,
+                'user_id' => $user->id,
+                'schedule_id' => $schedule->id,
+                'assignment_id' => $assignment->id,
+                'post_id' => $post->id,
+                'date' => $today,
+                'check_in_at' => $now,
+                'checkin_lat' => $request->latitude,
+                'checkin_lng' => $request->longitude,
+                'attendance_status' => $attendanceStatus,
+                'computed_status' => $computedStatus,
+                'late_minutes' => $lateMinutes,
+                'overtime_minutes' => 0,
+                'overtime_status' => ($isOffDutyAssignment && $workAssignment) ? 'APPROVED' : 'NONE',
+                'selfie_photo_path' => $selfiePath,
+            ]);
+
+            if ($isOffDutyAssignment && $workAssignment) {
+                $offDayOvertime->createFromCheckIn($schedule, $created, $workAssignment);
+            }
+
+            return $created;
+        });
 
         $dateFormatted = $todayCarbon->translatedFormat('d F Y'); // e.g., "13 Februari 2026" (device date!)
         $nowInProjectTz = $now->copy()->setTimezone($projectTimezone);
@@ -628,7 +680,7 @@ class AttendanceController extends Controller
         // Ambil semua schedule project untuk hari ini (beserta assignment+user+post)
         $schedulesToday = Schedule::where('project_id', $user->project_id)
             ->where('date', $today)
-            ->with(['assignment', 'user', 'post'])
+            ->with(['assignment', 'user'])
             ->get();
 
         // Filter schedule berdasarkan assignment yang sedang aktif saat ini (time-only compare memakai tanggal hari ini)
@@ -698,7 +750,7 @@ class AttendanceController extends Controller
         // Ambil attendance untuk schedule active (hari ini)
         $attendances = Attendance::whereIn('schedule_id', $scheduleIds)
             ->where('date', $today)
-            ->with(['user', 'post', 'schedule.post', 'schedule.assignment', 'project.organization'])
+            ->with(['user', 'post', 'schedule.assignment', 'project.organization'])
             ->get()
             ->keyBy('schedule_id');
 
@@ -720,11 +772,6 @@ class AttendanceController extends Controller
                 ],
                 'schedule' => [
                     'id' => (int) $schedule->id,
-                    'post' => [
-                        'id' => $schedule->post?->id,
-                        'name' => $schedule->post?->name,
-                        'type' => $schedule->post?->type,
-                    ],
                 ],
                 'attendance' => $attendance ? [
                     'id' => (int) $attendance->id,
@@ -963,11 +1010,17 @@ class AttendanceController extends Controller
         $isOffDutyAssignment = $assignment->isOffDuty(); // termasuk code 'O'
         $overtimeMinutes = 0;
         $overtimeStatus = 'NONE';
+        $hasOffDayOvertime = false;
 
         // Assignment O/OFF: tidak perlu overtime log approval, dan overtime dihitung dari durasi kerja (check-in -> check-out)
         if ($isOffDutyAssignment) {
-            $overtimeMinutes = (int) $attendance->check_in_at->diffInMinutes($now);
-            $overtimeStatus = 'APPROVED';
+            // Overtime OFF day dihitung 1 assignment penuh (durasi dari assignment lembur),
+            // bukan selisih check-in -> check-out.
+            $otLog = $attendance->overtimeLog()->with('workAssignment')->first();
+
+            $overtimeMinutes = (int) ($otLog?->workAssignment?->getDurationInMinutes() ?? 0);
+            $overtimeStatus = $otLog ? 'APPROVED' : 'NONE';
+            $hasOffDayOvertime = (bool) $otLog;
         } else {
             // Tentukan end_time dari assignment
             $endTime = Carbon::createFromFormat('Y-m-d H:i:s', $attendance->date->format('Y-m-d') . ' ' . $assignment->end_time, $projectTimezone);
@@ -1045,7 +1098,7 @@ class AttendanceController extends Controller
         // Update computed_status (overtimeMinutes dan overtimeStatus sudah dihitung di atas)
         $computedStatus = $attendance->computed_status; // Start dari status check-in
 
-        if ($overtimeMinutes > 0 && strpos($computedStatus, 'LEMBUR') === false) {
+        if (($hasOffDayOvertime || $overtimeMinutes > 0) && strpos($computedStatus, 'LEMBUR') === false) {
             $computedStatus .= ' LEMBUR';
         }
 

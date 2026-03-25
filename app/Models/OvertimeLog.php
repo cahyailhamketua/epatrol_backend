@@ -14,25 +14,17 @@ class OvertimeLog extends Model
     protected $fillable = [
         'project_id',
         'user_id',
-        'assignment_id',
         'schedule_id',
+        'attendance_id',
+        'scheduled_assignment_id',
+        'work_assignment_id',
         'date',
-        'overtime_type',
-        'planned_start_time',
-        'planned_end_time',
-        'planned_minutes',
-        'actual_start_time',
-        'actual_end_time',
-        'actual_minutes',
-        'status',
-        'approved_by',
-        'approved_at',
-        'notes',
+        'display_code',
+        'minutes',
     ];
 
     protected $casts = [
         'date' => 'date',
-        'approved_at' => 'datetime',
     ];
 
     public function project()
@@ -45,42 +37,26 @@ class OvertimeLog extends Model
         return $this->belongsTo(User::class);
     }
 
-    public function assignment()
-    {
-        return $this->belongsTo(Assignment::class);
-    }
-
     public function schedule()
     {
         return $this->belongsTo(Schedule::class);
     }
 
-    public function approvedBy()
-    {
-        return $this->belongsTo(User::class, 'approved_by');
-    }
-
-    // Relationships
     public function attendance()
     {
-        return $this->hasOne(Attendance::class, 'schedule_id', 'schedule_id')
-                    ->whereDate('date', $this->date);
+        return $this->belongsTo(Attendance::class);
     }
 
-    // Scopes
-    public function scopeApproved($query)
+    /** Assignment OFF di jadwal (mis. O) */
+    public function scheduledAssignment()
     {
-        return $query->where('status', 'APPROVED');
+        return $this->belongsTo(Assignment::class, 'scheduled_assignment_id');
     }
 
-    public function scopePending($query)
+    /** Shift kerja lembur (mis. P atau M) */
+    public function workAssignment()
     {
-        return $query->where('status', 'PENDING');
-    }
-
-    public function scopeCompleted($query)
-    {
-        return $query->where('status', 'COMPLETED');
+        return $this->belongsTo(Assignment::class, 'work_assignment_id');
     }
 
     public function scopeByDate($query, $date)
@@ -101,34 +77,5 @@ class OvertimeLog extends Model
     public function scopeInPeriod($query, $startDate, $endDate)
     {
         return $query->whereBetween('date', [$startDate, $endDate]);
-    }
-
-    // Mutators
-    public function calculatePlannedMinutes()
-    {
-        $start = \Carbon\Carbon::createFromFormat('H:i:s', $this->planned_start_time);
-        $end = \Carbon\Carbon::createFromFormat('H:i:s', $this->planned_end_time);
-        
-        if ($end->lessThanOrEqualTo($start)) {
-            $end->addDay();
-        }
-        
-        return $end->diffInMinutes($start);
-    }
-
-    public function calculateActualMinutes()
-    {
-        if (!$this->actual_start_time || !$this->actual_end_time) {
-            return null;
-        }
-
-        $start = \Carbon\Carbon::createFromFormat('H:i:s', $this->actual_start_time);
-        $end = \Carbon\Carbon::createFromFormat('H:i:s', $this->actual_end_time);
-        
-        if ($end->lessThanOrEqualTo($start)) {
-            $end->addDay();
-        }
-        
-        return $end->diffInMinutes($start);
     }
 }

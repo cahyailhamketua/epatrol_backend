@@ -15,6 +15,7 @@ use App\Http\Controllers\Api\ActivityAssignmentTimeController;
 use App\Http\Controllers\Api\PatrolPointController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\AbsenceController;
+use App\Http\Controllers\Api\OvertimeLogController;
 use App\Http\Controllers\Api\AttendanceController;
 use App\Http\Controllers\Api\PatrolScanController;
 use App\Http\Controllers\Api\QrCodeController;
@@ -239,6 +240,10 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/absences/{absence}', [AbsenceController::class, 'update']);
     Route::delete('/absences/{absence}', [AbsenceController::class, 'destroy']);
     Route::delete('/schedules/{schedule}/absence', [AbsenceController::class, 'destroyBySchedule']);
+
+    // Overtime (auto dari lembur hari OFF — lihat dokumentasi API check-in)
+    Route::get('/overtime-logs', [OvertimeLogController::class, 'index']);
+    Route::get('/overtime-logs/{overtimeLog}', [OvertimeLogController::class, 'show']);
 });
 
 // Patrol Scan routes
