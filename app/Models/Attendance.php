@@ -68,8 +68,7 @@ class Attendance extends Model
 
     public function overtimeLog()
     {
-        return $this->belongsTo(OvertimeLog::class, 'schedule_id', 'schedule_id')
-                    ->whereDate('date', $this->date);
+        return $this->hasOne(OvertimeLog::class, 'attendance_id');
     }
 
     /**

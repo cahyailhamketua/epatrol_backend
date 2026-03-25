@@ -48,14 +48,14 @@ class ScheduleSheetService
 
         /*
         |--------------------------------------------------------------------------
-        | 4️⃣ GET OVERTIME
+        | 4️⃣ GET OVERTIME (lembur hari OFF, keyed by schedule_id)
         |--------------------------------------------------------------------------
         */
-        $overtimes = OvertimeLog::where('project_id', $projectId)
+        $overtimes = OvertimeLog::with('workAssignment')
+            ->where('project_id', $projectId)
             ->whereBetween('date', [$startDate, $endDate])
-            ->where('status', 'APPROVED')
             ->get()
-            ->keyBy(fn($o) => $o->user_id . '_' . $o->date->format('Y-m-d'));
+            ->keyBy('schedule_id');
 
         /*
         |--------------------------------------------------------------------------
@@ -93,12 +93,12 @@ class ScheduleSheetService
                 'IZIN' => 0,
                 'CUTI' => 0,
                 'ALPA' => 0,
-                'OVERTIME_MINUTES' => 0,
+                'OVERTIME_COUNT' => 0,
             ];
 
             $days = [];
-            $scheduleCount = 0; // exclude OFF (assignment is_off=true)
-            $offCount = 0; // assignment is_off=true
+            $scheduleCount = 0; // hari kerja terjadwal (bukan OFF)
+            $offCount = 0; // hari OFF murni (tidak masuk)
 
             foreach (CarbonPeriod::create($startDate, $endDate) as $date) {
 
@@ -118,18 +118,26 @@ class ScheduleSheetService
                 }
                 $summary[$assignmentCode]++;
 
-                // Count schedule kerja: selain off (assignment is_off=true)
-                if ($assignment->is_off) {
-                    $offCount++;
-                } else {
-                    $scheduleCount++;
-                }
-
                 $key = $userId . '_' . $dateString;
 
                 $attendance = $attendances[$key] ?? null;
                 $absence    = $absences[$schedule->id] ?? null;
-                $overtime   = $overtimes[$key] ?? null;
+                $overtime   = $overtimes[$schedule->id] ?? null;
+
+                $isOffScheduled = $assignment->isOffDuty();
+
+                // Count schedule kerja vs OFF: jika OFF tapi masuk (ada attendance/lembur) → bukan OFF murni
+                if ($isOffScheduled) {
+                    if (! $attendance) {
+                        $offCount++;
+                    }
+                } else {
+                    $scheduleCount++;
+                }
+
+                $cellAssignmentDisplay = $overtime && $overtime->display_code
+                    ? $overtime->display_code
+                    : $assignmentCode;
 
                 // Attendance (DINAS tidak dimasukkan ke agregat)
                 if ($attendance && $attendance->attendance_status !== 'DINAS') {
@@ -151,14 +159,15 @@ class ScheduleSheetService
                     }
                 }
 
-                // Overtime Summary
+                // Overtime Summary: lembur dihitung per shift/assignment (bukan menit)
                 if ($overtime) {
-                    $summary['OVERTIME_MINUTES'] += $overtime->planned_minutes;
+                    $summary['OVERTIME_COUNT']++;
                 }
 
                 $days[$dateString] = [
                     'schedule_id' => $schedule->id,
-                    'assignment' => $assignmentCode,
+                    'assignment' => $cellAssignmentDisplay,
+                    'scheduled_assignment_code' => $assignmentCode,
                     'attendance' => $attendance ? [
                         'id' => $attendance->id,
                         'check_in_at' => $attendance->check_in_at,
@@ -172,8 +181,8 @@ class ScheduleSheetService
                         'summary_key' => Absence::TYPE_TO_SUMMARY_KEY[$absence->absence_type] ?? null,
                     ] : null,
                     'overtime' => $overtime ? [
-                        'minutes' => $overtime->planned_minutes,
-                        'status' => $overtime->status,
+                        'display_code' => $overtime->display_code,
+                        'work_assignment_code' => optional($overtime->workAssignment)->code,
                     ] : null,
                 ];
             }
@@ -185,7 +194,7 @@ class ScheduleSheetService
                 // jumlah schedule kerja (exclude OFF / is_off=true)
                 'SCHEDULE_COUNT' => $scheduleCount,
                 'HK' => ($summary['HADIR'] ?? 0) + ($summary['HADIR TELAT'] ?? 0),
-                'OT' => $summary['OVERTIME_MINUTES'] ?? 0,
+                'OT' => $summary['OVERTIME_COUNT'] ?? 0,
                 // OFF dihitung berdasarkan assignment is_off=true
                 'OFF' => $offCount,
                 'SAKIT' => $summary['SAKIT'] ?? 0,

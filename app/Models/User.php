@@ -97,11 +97,6 @@ class User extends Authenticatable
             return $this->hasMany(PayrollDetail::class);
         }
 
-        public function approvedOvertimeLogs()
-        {
-            return $this->hasMany(OvertimeLog::class, 'approved_by');
-        }
-
         public function approvedPayrollRuns()
         {
             return $this->hasMany(PayrollRun::class, 'finalized_by');
