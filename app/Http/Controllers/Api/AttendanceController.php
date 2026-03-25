@@ -773,8 +773,16 @@ class AttendanceController extends Controller
                 'schedule' => [
                     'id' => (int) $schedule->id,
                 ],
+                'post' => $attendance ? [
+                    'post_id' => (int) $attendance->post_id,
+                    'name' => $attendance->post?->name,
+                    'type' => $attendance->post?->type,
+                ] : null,
                 'attendance' => $attendance ? [
                     'id' => (int) $attendance->id,
+                    'post_id' => (int) $attendance->post_id,
+                    'post_name' => $attendance->post?->name,
+                    'post_type' => $attendance->post?->type,
                     'check_in_at' => $attendance->check_in_at?->toISOString(),
                     'check_out_at' => $attendance->check_out_at?->toISOString(),
                     'computed_status' => $attendance->computed_status,
