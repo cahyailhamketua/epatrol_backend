@@ -56,6 +56,7 @@ class ScheduleController extends Controller
                 'project_id',
                 'user_id',
                 'assignment_id',
+                'membership_status',
                 'date',
                 'created_at',
                 'updated_at'
@@ -103,6 +104,7 @@ class ScheduleController extends Controller
                 'project_id',
                 'user_id',
                 'assignment_id',
+                'membership_status',
                 'date',
                 'created_at'
             )
@@ -146,6 +148,7 @@ class ScheduleController extends Controller
                 'project_id',
                 'user_id',
                 'assignment_id',
+                'membership_status',
                 'date',
                 'created_at'
             )
@@ -620,11 +623,23 @@ class ScheduleController extends Controller
         }
 
         $month = $validated['month'];
+        $targetStart = \Carbon\Carbon::parse($month . '-01')->startOfMonth();
+        $targetEnd = \Carbon\Carbon::parse($month . '-01')->endOfMonth();
+        $nowMonthStart = now()->startOfMonth();
+
+        // Requirement: tidak boleh generate jadwal untuk bulan yang sudah lewat
+        if ($targetEnd->lt($nowMonthStart)) {
+            return response()->json([
+                'message' => 'Tidak boleh generate schedule untuk bulan yang sudah lewat.',
+                'target_month' => $month,
+                'current_month' => now()->format('Y-m'),
+            ], 422);
+        }
         $overwrite = $validated['overwrite_existing'] ?? false;
 
         if ($overwrite) {
-            $startDate = \Carbon\Carbon::parse($month . '-01')->startOfMonth();
-            $endDate   = \Carbon\Carbon::parse($month . '-01')->endOfMonth();
+            $startDate = $targetStart;
+            $endDate   = $targetEnd;
 
             Schedule::where('project_id', $project->id)
                 ->where('team_id', $team->id)
@@ -772,6 +787,16 @@ class ScheduleController extends Controller
         $targetMonth = $validated['month'];
         $targetStart = \Carbon\Carbon::parse($targetMonth . '-01')->startOfMonth();
         $targetEnd   = \Carbon\Carbon::parse($targetMonth . '-01')->endOfMonth();
+        $nowMonthStart = now()->startOfMonth();
+
+        // Requirement: tidak boleh generate jadwal untuk bulan yang sudah lewat
+        if ($targetEnd->lt($nowMonthStart)) {
+            return response()->json([
+                'message' => 'Tidak boleh generate schedule untuk bulan yang sudah lewat.',
+                'target_month' => $targetMonth,
+                'current_month' => now()->format('Y-m'),
+            ], 422);
+        }
 
         // Tentukan bulan template: dari request atau default ke bulan sebelumnya
         if (! empty($validated['template_month'])) {
@@ -821,15 +846,35 @@ class ScheduleController extends Controller
             ->get()
             ->keyBy('code');
 
-        // Generate jadwal untuk semua anggota tim
-        $team->loadMissing('users');
-        $members = $team->users;
+        // Generate jadwal untuk anggota tim yang aktif di bulan target
+        // (ambil pivot start/end supaya membership_status bisa prorate)
+        $memberships = TeamUser::query()
+            ->where('team_id', $team->id)
+            ->whereDate('start_date', '<=', $targetEnd)
+            ->where(function ($q) use ($targetStart) {
+                $q->whereNull('end_date')
+                    ->orWhereDate('end_date', '>=', $targetStart);
+            })
+            ->with('user')
+            ->get()
+            ->filter(fn($m) => $m->user && $m->user->active)
+            ->values();
 
-        if ($members->isEmpty()) {
+        $memberIds = $memberships->pluck('user_id')->unique()->values();
+
+        if ($memberIds->isEmpty()) {
             return response()->json([
                 'message' => 'Team has no members to generate schedules for.',
             ], 422);
         }
+
+        // Jika jadwal bulan target sudah pernah tergenerate sebelumnya,
+        // pastikan user yang sudah tidak aktif lagi tidak tersisa.
+        Schedule::where('project_id', $project->id)
+            ->where('team_id', $team->id)
+            ->whereBetween('date', [$targetStart, $targetEnd])
+            ->whereNotIn('user_id', $memberIds)
+            ->delete();
 
         $dayIndex = $offset;
         $current = $targetStart->copy();
@@ -844,7 +889,22 @@ class ScheduleController extends Controller
                 ], 422);
             }
 
-            foreach ($members as $member) {
+            foreach ($memberships as $membership) {
+                $member = $membership->user;
+                $memberStart = $membership->start_date ? \Carbon\Carbon::parse($membership->start_date) : $targetStart;
+                $memberEnd = $membership->end_date ? \Carbon\Carbon::parse($membership->end_date) : null;
+
+                // PRORATE-IN: user bergabung setelah tanggal 1 bulan target
+                if ($memberStart->gt($targetStart)) {
+                    $membershipStatus = Schedule::STATUS_PRORATE_IN;
+                } else {
+                    // PRORATE-OUT: user keluar sebelum akhir bulan target
+                    $membershipStatus = Schedule::STATUS_FULL_EXISTING;
+                    if ($memberEnd && $memberEnd->lt($targetEnd)) {
+                        $membershipStatus = Schedule::STATUS_PRORATE_OUT;
+                    }
+                }
+
                 Schedule::updateOrCreate(
                     [
                         'project_id' => $project->id,
@@ -854,6 +914,7 @@ class ScheduleController extends Controller
                     [
                         'assignment_id' => $assignment->id,
                         'team_id' => $team->id,
+                        'membership_status' => $membershipStatus,
                     ]
                 );
             }
@@ -995,6 +1056,21 @@ class ScheduleController extends Controller
         $startDate = \Carbon\Carbon::parse($month . '-01')->startOfMonth();
         $endDate   = \Carbon\Carbon::parse($month . '-01')->endOfMonth();
 
+        $nowMonthStart = now()->startOfMonth();
+        if ($endDate->lt($nowMonthStart)) {
+            return response()->json([
+                'message' => 'Tidak boleh menyalin schedule untuk bulan yang sudah lewat.',
+                'target_month' => $month,
+                'current_month' => now()->format('Y-m'),
+            ], 422);
+        }
+        $memberStartDate = isset($validated['start_date'])
+            ? \Carbon\Carbon::parse($validated['start_date'])->startOfDay()
+            : now()->startOfDay();
+        $isProrateIn = $memberStartDate->greaterThan($startDate->copy()->startOfDay())
+            && $memberStartDate->lessThanOrEqualTo($endDate->copy()->endOfDay());
+        $memberStatus = $isProrateIn ? Schedule::STATUS_PRORATE_IN : Schedule::STATUS_FULL_EXISTING;
+
         $leaderSchedules = Schedule::where('project_id', $team->project_id)
             ->where('team_id', $team->id)
             ->where('user_id', $leaderId)
@@ -1011,6 +1087,7 @@ class ScheduleController extends Controller
                 [
                     'assignment_id' => $leaderSchedule->assignment_id,
                     'team_id' => $team->id,
+                    'membership_status' => $memberStatus,
                 ]
             );
         }

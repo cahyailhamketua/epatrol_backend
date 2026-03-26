@@ -12,6 +12,10 @@ use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use App\Services\ImageWebpService;
+use App\Models\TeamUser;
+use App\Models\Schedule;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
 
 class UserController extends Controller
 {
@@ -210,9 +214,25 @@ class UserController extends Controller
     {
         $this->authorize('deactivate', $user);
 
-        $user->update([
-            'active' => false,
-        ]);
+        DB::transaction(function () use ($user) {
+            $today = Carbon::today();
+            $monthStart = $today->copy()->startOfMonth();
+            $monthEnd = $today->copy()->endOfMonth();
+
+            $user->update([
+                'active' => false,
+            ]);
+
+            // Tutup membership tim aktif per hari ini (agar bulan berikutnya tidak ikut generate).
+            TeamUser::where('user_id', $user->id)
+                ->whereNull('end_date')
+                ->update(['end_date' => $today->toDateString()]);
+
+            // Jadwal bulan berjalan tetap ada namun ditandai prorate keluar.
+            Schedule::where('user_id', $user->id)
+                ->whereBetween('date', [$monthStart, $monthEnd])
+                ->update(['membership_status' => Schedule::STATUS_PRORATE_OUT]);
+        });
 
         return response()->json([
             'message' => 'User has been deactivated',

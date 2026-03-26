@@ -222,6 +222,7 @@ class ScheduleSheetService
                     'name' => $user->full_name ?? $user->name,
                     'team_id' => $firstSchedule->team_id,
                     'team_name' => optional($firstSchedule->team)->name,
+                    'membership_status' => $firstSchedule->membership_status ?? Schedule::STATUS_FULL_EXISTING,
                 ],
                 'summary' => $finalSummary,
                 'days' => $days,

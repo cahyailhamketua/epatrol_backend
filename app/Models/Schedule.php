@@ -9,11 +9,16 @@ class Schedule extends Model
 {
     use HasFactory;
 
+    public const STATUS_FULL_EXISTING = 'FULL_EXISTING';
+    public const STATUS_PRORATE_IN = 'PRORATE_IN';
+    public const STATUS_PRORATE_OUT = 'PRORATE_OUT';
+
     protected $fillable = [
         'project_id',
         'user_id',
         'assignment_id',
         'team_id',
+        'membership_status',
         'date',
     ];
 
