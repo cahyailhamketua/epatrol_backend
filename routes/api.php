@@ -1,24 +1,23 @@
 <?php
 
-use Illuminate\Http\Request;
-use Illuminate\Support\Facades\Route;
-use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\AbsenceController;
+use App\Http\Controllers\Api\ActivityAssignmentTimeController;
+use App\Http\Controllers\Api\ActivityController;
+use App\Http\Controllers\Api\AssignmentController;
+use App\Http\Controllers\Api\AttendanceController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\OrganizationController;
-use App\Http\Controllers\Api\ProjectController;
-use App\Http\Controllers\Api\ShiftController;
-use App\Http\Controllers\Api\AssignmentController;
-use App\Http\Controllers\Api\PostController;
-use App\Http\Controllers\Api\TeamController;
-use App\Http\Controllers\Api\ActivityController;
-use App\Http\Controllers\Api\ActivityAssignmentTimeController;
-use App\Http\Controllers\Api\PatrolPointController;
-use App\Http\Controllers\Api\ScheduleController;
-use App\Http\Controllers\Api\AbsenceController;
 use App\Http\Controllers\Api\OvertimeLogController;
-use App\Http\Controllers\Api\AttendanceController;
+use App\Http\Controllers\Api\PatrolPointController;
 use App\Http\Controllers\Api\PatrolScanController;
+use App\Http\Controllers\Api\PostController;
+use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\QrCodeController;
+use App\Http\Controllers\Api\ScheduleController;
+use App\Http\Controllers\Api\ShiftController;
+use App\Http\Controllers\Api\TeamController;
+use App\Http\Controllers\Api\UserController;
+use Illuminate\Support\Facades\Route;
 
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
@@ -53,7 +52,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     Route::patch('/organizations/{organization}/deactivate', [OrganizationController::class, 'deactivate']);
     Route::patch('/organizations/{organization}/activate', [OrganizationController::class, 'activate']);
-    //project by organization
+    // project by organization
     Route::get('/organizations/{organization}/projects', [ProjectController::class, 'projectsByOrganization']
     );
     // assignments by organization
@@ -106,7 +105,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/assignments', [AssignmentController::class, 'index']);
     Route::get('/projects/{project}/assignments', [AssignmentController::class, 'indexByProject']);
     Route::post('/projects/{project}/assignments', [AssignmentController::class, 'store']);
-    
+
     Route::get('/assignments/{assignment}', [AssignmentController::class, 'show']);
     Route::put('/assignments/{assignment}', [AssignmentController::class, 'update']);
     Route::delete('/assignments/{assignment}', [AssignmentController::class, 'destroy']);
@@ -132,7 +131,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/posts/{post}/patrol-points', [PatrolPointController::class, 'store']);
     Route::get('/patrol-points/{patrolPoint}', [PatrolPointController::class, 'show']);
     Route::put('/patrol-points/{patrolPoint}', [PatrolPointController::class, 'update']);
-    Route::delete('/patrol-points/{patrolPoint}',[PatrolPointController::class, 'destroy']);
+    Route::delete('/patrol-points/{patrolPoint}', [PatrolPointController::class, 'destroy']);
 });
 
 // activity routes
@@ -140,11 +139,13 @@ Route::middleware('auth:sanctum')->group(function () {
     // All activities grouped by post & assignment
     Route::get('/activities/schedule', [ActivityController::class, 'schedule']);
 
-    Route::get('/posts/{post}/activities', [ActivityController::class, 'index']);
+    // Route::get('/posts/{post}/activities', [ActivityController::class, 'index']);
+    Route::get('/posts/activities/get', [ActivityController::class, 'index']);
     Route::get('/posts/{post}/activities/schedule', [ActivityController::class, 'scheduleByPost']);
-    Route::post('/posts/{post}/activities', [ActivityController::class, 'store']);
-    Route::put('/posts/{post}/activities', [ActivityController::class, 'update']);
-    
+    // Route::post('/posts/{post}/activities', [ActivityController::class, 'store']);
+    Route::post('/posts/activities', [ActivityController::class, 'store']);
+    // Route::put('/posts/{post}/activities', [ActivityController::class, 'update']);
+    Route::put('/posts/activities', [ActivityController::class, 'update']);
     Route::put('/activities/{activity}', [ActivityController::class, 'updateActivity']);
     Route::delete('/activities/{activity}', [ActivityController::class, 'destroy']);
 });
@@ -153,20 +154,20 @@ Route::middleware('auth:sanctum')->group(function () {
 Route::middleware('auth:sanctum')->group(function () {
     // Get all activity assignment times (with filters)
     Route::get('/activity-assignment-times', [ActivityAssignmentTimeController::class, 'index']);
-    
+
     // Activity assignment times by activity
     Route::get('/activities/{activity}/assignment-times', [ActivityAssignmentTimeController::class, 'indexByActivity']);
     Route::post('/activities/{activity}/assignment-times', [ActivityAssignmentTimeController::class, 'store']);
     Route::post('/activities/{activity}/assignment-times/bulk', [ActivityAssignmentTimeController::class, 'storeBulk']);
-    
+
     // Activity assignment times by assignment
     Route::get('/assignments/{assignment}/activity-times', [ActivityAssignmentTimeController::class, 'indexByAssignment']);
-    
+
     // Individual activity assignment time operations
     Route::get('/activity-assignment-times/{activityAssignmentTime}', [ActivityAssignmentTimeController::class, 'show']);
     Route::put('/activity-assignment-times/{activityAssignmentTime}', [ActivityAssignmentTimeController::class, 'update']);
     Route::delete('/activity-assignment-times/{activityAssignmentTime}', [ActivityAssignmentTimeController::class, 'destroy']);
-    
+
     // Bulk delete
     Route::post('/activity-assignment-times/delete-bulk', [ActivityAssignmentTimeController::class, 'destroyBulk']);
 });
@@ -175,7 +176,7 @@ Route::middleware('auth:sanctum')->group(function () {
 Route::middleware('auth:sanctum')->group(function () {
     // Get all schedules (with filters)
     Route::get('/schedules', [ScheduleController::class, 'index']);
-    
+
     // Get schedules by project
     Route::get('/projects/{project}/schedules', [ScheduleController::class, 'indexByProject']);
     Route::post('/projects/{project}/schedules', [ScheduleController::class, 'store']);
@@ -191,16 +192,16 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/projects/{project}/teams/{team}/schedule-template', [ScheduleController::class, 'showTeamScheduleTemplate']);
     Route::post('/projects/{project}/teams/{team}/schedules/generate-from-template', [ScheduleController::class, 'generateForTeamFromTemplate']);
     Route::delete('/projects/{project}/teams/{team}/schedules', [ScheduleController::class, 'destroyForTeam']);
-    
+
     // Get schedules by user
     Route::get('/users/{user}/schedules', [ScheduleController::class, 'indexByUser']);
-    
+
     // Individual schedule operations
     Route::get('/schedules/{schedule}', [ScheduleController::class, 'show']);
     Route::put('/schedules/{schedule}', [ScheduleController::class, 'update']);
     Route::patch('/schedules/{schedule}', [ScheduleController::class, 'updateAssignment']);
     Route::delete('/schedules/{schedule}', [ScheduleController::class, 'destroy']);
-    
+
     // Bulk delete
     Route::post('/schedules/delete-bulk', [ScheduleController::class, 'destroyBulk']);
 
@@ -212,22 +213,25 @@ Route::middleware('auth:sanctum')->group(function () {
 Route::middleware('auth:sanctum')->group(function () {
     // List attendances (dengan filter)
     Route::get('/attendances', [AttendanceController::class, 'index']);
-    
+
     // ` check-in/patrol per assignment aktif (project user)
     Route::get('/attendances/progress', [AttendanceController::class, 'progress']);
-    
+
     // Validate time before check-in (tanpa foto)
     Route::post('/attendances/validate-time', [AttendanceController::class, 'validateCheckInTime']);
-    
+
     // Check-in (dengan foto)
     Route::post('/attendances/check-in', [AttendanceController::class, 'checkIn']);
-    
+
+    // Delete check-in (jika user salah)
+    Route::delete('/attendances/check-in/{attendance}', [AttendanceController::class, 'deleteCheckIn']);
+
     // Patrol scan (mobile post)
     Route::post('/attendances/patrol-scan', [AttendanceController::class, 'patrolScan']);
-    
+
     // Check-out
     Route::post('/attendances/check-out', [AttendanceController::class, 'checkOut']);
-    
+
     // View attendance detail
     Route::get('/attendances/{attendance}', [AttendanceController::class, 'show']);
 });
@@ -253,25 +257,25 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Get scan progress for attendance
     Route::get('/attendance/{attendance}/patrol-scan/progress', [PatrolScanController::class, 'getProgress']);
-    
+
     // Get all scans for attendance
     Route::get('/attendance/{attendance}/patrol-scans', [PatrolScanController::class, 'getAttendanceScans']);
-    
+
     // Get scan statistics
     Route::get('/attendance/{attendance}/patrol-scan/statistics', [PatrolScanController::class, 'getStatistics']);
-    
+
     // Perform patrol scan (QR scan)
     Route::post('/patrol-scan', [PatrolScanController::class, 'performScan']);
-    
+
     // Get scan details
     Route::get('/patrol-scan/{scan}', [PatrolScanController::class, 'show']);
-    
+
     // Add photo to scan
     Route::post('/patrol-scan/{scan}/photo', [PatrolScanController::class, 'addPhoto']);
-    
+
     // Delete photo from scan
     Route::delete('/patrol-scan/{scan}/photo/{photoId}', [PatrolScanController::class, 'deletePhoto']);
-    
+
     // Download photo
     Route::get('/patrol-scan-photo/{photoId}/download', [PatrolScanController::class, 'downloadPhoto']);
 });

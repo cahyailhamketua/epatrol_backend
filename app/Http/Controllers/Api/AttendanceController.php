@@ -365,23 +365,12 @@ class AttendanceController extends Controller
             ], 403);
         }
 
-        // GUARD 1: Cegah double check-in (gunakan device date, bukan server date)
+        // Jika sudah check-in hari ini, request check-in berikutnya akan dianggap EDIT.
         $existingAttendance = Attendance::where('user_id', $user->id)
             ->where('date', $today)
             ->whereNotNull('check_in_at')
+            ->orderByDesc('check_in_at')
             ->first();
-
-        if ($existingAttendance) {
-            $dateFormatted = $todayCarbon->translatedFormat('d F Y'); // e.g., "13 February 2026" (device date!)
-            $existingCheckinTime = $existingAttendance->check_in_at->setTimezone('Asia/Jakarta')->format('H:i:s'); // Use default timezone for display
-
-            return response()->json([
-                'message' => 'Anda sudah absen masuk hari ini.',
-                'info' => 'Ini tanggal '.$dateFormatted,
-                'date' => $today,
-                'last_check_in_at' => $existingCheckinTime,
-            ], 409);
-        }
 
         // GUARD 2: Wajib punya schedule hari ini (hanya untuk validasi assignment time)
         $schedule = Schedule::where('user_id', $user->id)
@@ -627,8 +616,38 @@ class AttendanceController extends Controller
             $selfiePath,
             $isOffDutyAssignment,
             $workAssignment,
-            $offDayOvertime
+            $offDayOvertime,
+            $existingAttendance
         ) {
+            if ($existingAttendance && ! $existingAttendance->check_out_at) {
+                // EDIT check-in yang sudah ada (hari yang sama)
+                $existingAttendance->project_id = $schedule->project_id;
+                $existingAttendance->schedule_id = $schedule->id;
+                $existingAttendance->assignment_id = $assignment->id;
+                $existingAttendance->post_id = $post?->id;
+                $existingAttendance->date = $today;
+                $existingAttendance->check_in_at = $now;
+                $existingAttendance->checkin_lat = $request->latitude;
+                $existingAttendance->checkin_lng = $request->longitude;
+                $existingAttendance->attendance_status = $attendanceStatus;
+                $existingAttendance->computed_status = $computedStatus;
+                $existingAttendance->late_minutes = $lateMinutes;
+                $existingAttendance->overtime_minutes = 0;
+                $existingAttendance->overtime_status = ($isOffDutyAssignment && $workAssignment) ? 'APPROVED' : 'NONE';
+
+                if ($selfiePath) {
+                    $existingAttendance->selfie_photo_path = $selfiePath;
+                }
+
+                $existingAttendance->save();
+
+                if ($isOffDutyAssignment && $workAssignment) {
+                    $offDayOvertime->createFromCheckIn($schedule, $existingAttendance, $workAssignment);
+                }
+
+                return $existingAttendance;
+            }
+
             $created = Attendance::create([
                 'project_id' => $schedule->project_id,
                 'user_id' => $user->id,
@@ -663,8 +682,10 @@ class AttendanceController extends Controller
             $lateInfo = ' (Telat '.$attendance->late_minutes.' menit)';
         }
 
+        $isEdit = (bool) ($existingAttendance && (int) $existingAttendance->id === (int) $attendance->id);
+
         return response()->json([
-            'message' => 'Absen masuk berhasil.',
+            'message' => $isEdit ? 'Check-in berhasil diperbarui.' : 'Absen masuk berhasil.',
             'info' => 'Ini tanggal '.$dateFormatted.$lateInfo,
             'date' => $today,
             'time' => $nowInProjectTz->format('H:i:s'),
@@ -672,7 +693,7 @@ class AttendanceController extends Controller
             'status' => $attendance->computed_status,
             'late_minutes' => (int) $attendance->late_minutes,
             'data' => $this->formatAttendanceResponse($attendance),
-        ], 201);
+        ], $isEdit ? 200 : 201);
     }
 
     /**
@@ -905,6 +926,34 @@ class AttendanceController extends Controller
                 'percentage' => $percentage,
             ],
             'members' => $members,
+        ], 200);
+    }
+
+    /**
+     * DELETE /api/attendances/check-in/{attendance}
+     * Hapus attendance jika check-in salah input.
+     */
+    public function deleteCheckIn(Request $request, Attendance $attendance)
+    {
+        $this->authorize('deleteCheckIn', $attendance);
+
+        if (! $attendance->check_in_at) {
+            return response()->json([
+                'message' => 'Attendance tidak valid.',
+            ], 400);
+        }
+
+        if ($attendance->check_out_at) {
+            return response()->json([
+                'message' => 'Attendance sudah check-out, tidak dapat dihapus.',
+            ], 409);
+        }
+
+        // Hapus attendance (beserta data turunan scan via FK jika ada)
+        $attendance->delete();
+
+        return response()->json([
+            'message' => 'Check-in berhasil dihapus.',
         ], 200);
     }
 
@@ -1526,6 +1575,10 @@ class AttendanceController extends Controller
                     'id' => $post?->id,
                     'name' => $post?->name,
                     'type' => $post?->type,
+                ],
+                'project' => [
+                    'id' => $project?->id,
+                    'name' => $project?->name,
                 ],
             ],
             'timing' => [

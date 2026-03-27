@@ -139,4 +139,28 @@ class AttendancePolicy
 
         return false;
     }
+
+    /**
+     * Delete check-in (hapus attendance) jika user salah input.
+     */
+    public function deleteCheckIn(User $user, Attendance $attendance): bool
+    {
+        if ($user->role === 'dev') {
+            return true;
+        }
+
+        if ($user->role === 'ho') {
+            return $user->organization_id === $attendance->project->organization_id;
+        }
+
+        if ($user->role === 'admin_project') {
+            return $user->project_id === $attendance->project_id;
+        }
+
+        if (in_array($user->role, ['komandan_regu', 'anggota'], true)) {
+            return $user->id === $attendance->user_id;
+        }
+
+        return false;
+    }
 }

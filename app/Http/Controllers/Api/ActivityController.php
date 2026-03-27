@@ -217,152 +217,294 @@ class ActivityController extends Controller
      * LIST ACTIVITY BY POST + assignment
      * GET /posts/{post}/activities?assignment_id=
      */
-    public function index(Request $request, Post $post)
-    {
-        $this->authorize('viewAny', Activity::class);
 
-        try {
-            $request->validate([
-                'assignment_id' => 'nullable|exists:assignments,id',
-            ]);
-        } catch (ValidationException $e) {
-            return response()->json([
-                'success'     => false,
-                'message'     => 'Validation failed',
-                'status_code' => 422,
-                'errors'      => $e->errors(),
-            ], 422);
-        }
+    // public function index(Request $request, Post $post)
+    // {
+    //     $this->authorize('viewAny', Activity::class);
 
-        $activities = Activity::where('post_id', $post->id)
-            ->where('active', true)
-            ->whereHas('assignmentTimes', function ($q) use ($request) {
-                $q->where('assignment_id', $request->assignment_id);
-            })
-            ->with(['assignmentTimes' => function ($q) use ($request) {
-                $q->where('assignment_id', $request->assignment_id);
-            }])
-            ->orderBy('name')
-            ->get();
+    //     try {
+    //         $request->validate([
+    //             'assignment_id' => 'nullable|exists:assignments,id',
+    //         ]);
+    //     } catch (ValidationException $e) {
+    //         return response()->json([
+    //             'success'     => false,
+    //             'message'     => 'Validation failed',
+    //             'status_code' => 422,
+    //             'errors'      => $e->errors(),
+    //         ], 422);
+    //     }
 
-        return response()->json([
-            'data' => $activities,
+    //     $activities = Activity::where('post_id', $post->id)
+    //         ->where('active', true)
+    //         ->whereHas('assignmentTimes', function ($q) use ($request) {
+    //             $q->where('assignment_id', $request->assignment_id);
+    //         })
+    //         ->with(['assignmentTimes' => function ($q) use ($request) {
+    //             $q->where('assignment_id', $request->assignment_id);
+    //         }])
+    //         ->orderBy('name')
+    //         ->get();
+
+    //     return response()->json([
+    //         'data' => $activities,
+    //     ]);
+    // }
+
+    public function index(Request $request)
+{
+    // ================= VALIDATION =================
+    try {
+        $request->validate([
+            'project_id' => 'nullable|exists:projects,id',
+            'post_id' => 'nullable|exists:posts,id',
+            'assignment_id' => 'nullable|exists:assignments,id',
         ]);
+    } catch (ValidationException $e) {
+        return response()->json([
+            'message' => 'Validation failed',
+            'errors'  => $e->errors(),
+        ], 422);
     }
+
+    // ================= VALIDASI RELASI =================
+    if (!$request->project_id && !$request->post_id) {
+        return response()->json([
+            'message' => 'Harus pilih project_id atau post_id',
+        ], 422);
+    }
+
+    $query = Activity::query()->where('active', true);
+
+    // ================= FILTER POST =================
+    if ($request->post_id) {
+        $query->where('post_id', $request->post_id);
+    }
+
+    // ================= FILTER PROJECT =================
+    if ($request->project_id) {
+        $query->where('project_id', $request->project_id);
+    }
+
+    // ================= FILTER ASSIGNMENT =================
+    if ($request->assignment_id) {
+        $query->whereHas('assignmentTimes', function ($q) use ($request) {
+            $q->where('assignment_id', $request->assignment_id);
+        });
+    }
+
+    $activities = $query
+        ->with(['assignmentTimes' => function ($q) use ($request) {
+            if ($request->assignment_id) {
+                $q->where('assignment_id', $request->assignment_id);
+            }
+        }])
+        ->orderBy('name')
+        ->get();
+
+    return response()->json([
+        'data' => $activities,
+    ]);
+}
 
     /**
      * CREATE ACTIVITY + assignment TIMES
      * POST /posts/{post}/activities
      */
-    public function store(Request $request, Post $post)
-    {
-        $this->authorize('manage', [Activity::class, $post->project]);
 
-        // Mode BULK (request berisi "activities": [...])
-        if ($request->has('activities')) {
-            try {
-                $validated = $request->validate([
-                    'activities' => 'required|array|min:1',
-                    'activities.*.name' => 'required|string|max:100',
-                    'activities.*.location' => 'required|string|max:100',
-                    'activities.*.active' => 'boolean',
+     public function store(Request $request)
+{
+    // ================= VALIDATION =================
+    try {
+        $validated = $request->validate([
+            'project_id' => 'nullable|exists:projects,id',
+            'post_id' => 'nullable|exists:posts,id',
 
-                    'activities.*.assignment_times' => 'required|array|min:1',
-                    'activities.*.assignment_times.*.assignment_id' => 'required|exists:assignments,id',
-                    'activities.*.assignment_times.*.start_time' => 'required|date_format:H:i',
-                    'activities.*.assignment_times.*.end_time' => 'required|date_format:H:i',
-                ]);
-            } catch (ValidationException $e) {
-                return response()->json([
-                    'success'     => false,
-                    'message'     => 'Validation failed',
-                    'status_code' => 422,
-                    'errors'      => $e->errors(),
-                ], 422);
-            }
+            'activities' => 'required|array|min:1',
+            'activities.*.name' => 'required|string|max:100',
+            'activities.*.location' => 'required|string|max:100',
+            'activities.*.active' => 'boolean',
 
-            $activities = DB::transaction(function () use ($validated, $post) {
-                $created = [];
-
-                foreach ($validated['activities'] as $activityData) {
-                    $activity = $post->activities()->create([
-                        'name'     => $activityData['name'],
-                        'location' => $activityData['location'],
-                        'active'   => $activityData['active'] ?? true,
-                    ]);
-
-                    foreach ($activityData['assignment_times'] as $timeData) {
-                        // Pastikan assignment berada pada project yang sama dengan post
-                        $assignment = Assignment::find($timeData['assignment_id']);
-                        if (!$assignment || $assignment->project_id !== $post->project_id) {
-                            throw ValidationException::withMessages([
-                                'activities' => ['Assignment tidak berada pada project yang sama dengan post.'],
-                            ]);
-                        }
-
-                        $activity->assignmentTimes()->create($timeData);
-                    }
-
-                    $created[] = $activity->load('assignmentTimes');
-                }
-
-                return $created;
-            });
-
-            return response()->json([
-                'message' => 'Activities created successfully',
-                'data'    => $activities,
-            ], 201);
-        }
-
-        // Mode SINGLE (kompatibel dengan struktur lama)
-        try {
-            $validated = $request->validate([
-                'name' => 'required|string|max:100',
-                'location' => 'required|string|max:100',
-                'active' => 'boolean',
-
-                'assignment_times' => 'required|array|min:1',
-                'assignment_times.*.assignment_id' => 'required|exists:assignments,id',
-                'assignment_times.*.start_time' => 'required|date_format:H:i',
-                'assignment_times.*.end_time' => 'required|date_format:H:i',
-            ]);
-        } catch (ValidationException $e) {
-            return response()->json([
-                'success'     => false,
-                'message'     => 'Validation failed',
-                'status_code' => 422,
-                'errors'      => $e->errors(),
-            ], 422);
-        }
-
-        $activity = DB::transaction(function () use ($validated, $post) {
-            $activity = $post->activities()->create([
-                'name' => $validated['name'],
-                'location' => $validated['location'],
-                'active' => $validated['active'] ?? true,
-            ]);
-
-            foreach ($validated['assignment_times'] as $time) {
-                // Pastikan assignment berada pada project yang sama dengan post
-                $assignment = Assignment::find($time['assignment_id']);
-                if (!$assignment || $assignment->project_id !== $post->project_id) {
-                    throw ValidationException::withMessages([
-                        'assignment_times' => ['Assignment tidak berada pada project yang sama dengan post.'],
-                    ]);
-                }
-
-                $activity->assignmentTimes()->create($time);
-            }
-
-            return $activity;
-        });
-
+            'activities.*.assignment_times' => 'required|array|min:1',
+            'activities.*.assignment_times.*.assignment_id' => 'required|exists:assignments,id',
+            'activities.*.assignment_times.*.start_time' => 'required|date_format:H:i',
+            'activities.*.assignment_times.*.end_time' => 'required|date_format:H:i',
+        ]);
+    } catch (ValidationException $e) {
         return response()->json([
-            'message' => 'Activity created successfully',
-            'data'    => $activity->load('assignmentTimes'),
-        ], 201);
+            'message' => 'Validation failed',
+            'errors'  => $e->errors(),
+        ], 422);
     }
+
+    // ================= VALIDASI RELASI =================
+    if (!$validated['project_id'] && !$validated['post_id']) {
+        return response()->json([
+            'message' => 'Harus pilih project_id atau post_id',
+        ], 422);
+    }
+
+    // ================= AMBIL PROJECT =================
+    if (!empty($validated['post_id'])) {
+        $post = Post::findOrFail($validated['post_id']);
+        $projectId = $post->project_id;
+    } else {
+        $projectId = $validated['project_id'];
+    }
+
+    // ================= TRANSACTION =================
+    $activities = DB::transaction(function () use ($validated, $projectId) {
+
+        $created = [];
+
+        foreach ($validated['activities'] as $activityData) {
+
+            $activity = Activity::create([
+                'project_id' => $projectId,
+                'post_id'    => $validated['post_id'] ?? null,
+                'name'       => $activityData['name'],
+                'location'   => $activityData['location'],
+                'active'     => $activityData['active'] ?? true,
+            ]);
+
+            foreach ($activityData['assignment_times'] as $time) {
+
+                $assignment = Assignment::findOrFail($time['assignment_id']);
+
+                // 🔒 VALIDASI PROJECT
+                if ($assignment->project_id !== $projectId) {
+                    throw ValidationException::withMessages([
+                        'assignment_times' => ['Assignment tidak sesuai project'],
+                    ]);
+                }
+
+                $activity->assignmentTimes()->create([
+                    'assignment_id' => $time['assignment_id'],
+                    'start_time'    => $time['start_time'],
+                    'end_time'      => $time['end_time'],
+                ]);
+            }
+
+            $created[] = $activity->load('assignmentTimes');
+        }
+
+        return $created;
+    });
+
+    return response()->json([
+        'message' => 'Activities created successfully',
+        'data'    => $activities,
+    ], 201);
+}
+    // public function store(Request $request, Post $post)
+    // {
+    //     $this->authorize('manage', [Activity::class, $post->project]);
+
+    //     // Mode BULK (request berisi "activities": [...])
+    //     if ($request->has('activities')) {
+    //         try {
+    //             $validated = $request->validate([
+    //                 'activities' => 'required|array|min:1',
+    //                 'activities.*.name' => 'required|string|max:100',
+    //                 'activities.*.location' => 'required|string|max:100',
+    //                 'activities.*.active' => 'boolean',
+
+    //                 'activities.*.assignment_times' => 'required|array|min:1',
+    //                 'activities.*.assignment_times.*.assignment_id' => 'required|exists:assignments,id',
+    //                 'activities.*.assignment_times.*.start_time' => 'required|date_format:H:i',
+    //                 'activities.*.assignment_times.*.end_time' => 'required|date_format:H:i',
+    //             ]);
+    //         } catch (ValidationException $e) {
+    //             return response()->json([
+    //                 'success'     => false,
+    //                 'message'     => 'Validation failed',
+    //                 'status_code' => 422,
+    //                 'errors'      => $e->errors(),
+    //             ], 422);
+    //         }
+
+    //         $activities = DB::transaction(function () use ($validated, $post) {
+    //             $created = [];
+
+    //             foreach ($validated['activities'] as $activityData) {
+    //                 $activity = $post->activities()->create([
+    //                     'name'     => $activityData['name'],
+    //                     'location' => $activityData['location'],
+    //                     'active'   => $activityData['active'] ?? true,
+    //                 ]);
+
+    //                 foreach ($activityData['assignment_times'] as $timeData) {
+    //                     // Pastikan assignment berada pada project yang sama dengan post
+    //                     $assignment = Assignment::find($timeData['assignment_id']);
+    //                     if (!$assignment || $assignment->project_id !== $post->project_id) {
+    //                         throw ValidationException::withMessages([
+    //                             'activities' => ['Assignment tidak berada pada project yang sama dengan post.'],
+    //                         ]);
+    //                     }
+
+    //                     $activity->assignmentTimes()->create($timeData);
+    //                 }
+
+    //                 $created[] = $activity->load('assignmentTimes');
+    //             }
+
+    //             return $created;
+    //         });
+
+    //         return response()->json([
+    //             'message' => 'Activities created successfully',
+    //             'data'    => $activities,
+    //         ], 201);
+    //     }
+
+    //     // Mode SINGLE (kompatibel dengan struktur lama)
+    //     try {
+    //         $validated = $request->validate([
+    //             'name' => 'required|string|max:100',
+    //             'location' => 'required|string|max:100',
+    //             'active' => 'boolean',
+
+    //             'assignment_times' => 'required|array|min:1',
+    //             'assignment_times.*.assignment_id' => 'required|exists:assignments,id',
+    //             'assignment_times.*.start_time' => 'required|date_format:H:i',
+    //             'assignment_times.*.end_time' => 'required|date_format:H:i',
+    //         ]);
+    //     } catch (ValidationException $e) {
+    //         return response()->json([
+    //             'success'     => false,
+    //             'message'     => 'Validation failed',
+    //             'status_code' => 422,
+    //             'errors'      => $e->errors(),
+    //         ], 422);
+    //     }
+
+    //     $activity = DB::transaction(function () use ($validated, $post) {
+    //         $activity = $post->activities()->create([
+    //             'name' => $validated['name'],
+    //             'location' => $validated['location'],
+    //             'active' => $validated['active'] ?? true,
+    //         ]);
+
+    //         foreach ($validated['assignment_times'] as $time) {
+    //             // Pastikan assignment berada pada project yang sama dengan post
+    //             $assignment = Assignment::find($time['assignment_id']);
+    //             if (!$assignment || $assignment->project_id !== $post->project_id) {
+    //                 throw ValidationException::withMessages([
+    //                     'assignment_times' => ['Assignment tidak berada pada project yang sama dengan post.'],
+    //                 ]);
+    //             }
+
+    //             $activity->assignmentTimes()->create($time);
+    //         }
+
+    //         return $activity;
+    //     });
+
+    //     return response()->json([
+    //         'message' => 'Activity created successfully',
+    //         'data'    => $activity->load('assignmentTimes'),
+    //     ], 201);
+    // }
 
     /**
      * BULK UPDATE ACTIVITIES DALAM SATU POST (STATE-BASED SYNC)
@@ -380,167 +522,336 @@ class ActivityController extends Controller
      *
      * Seluruh proses dibungkus DB::transaction
      */
-    public function update(Request $request, Post $post)
-    {
-        // 🔒 Authorization
-        $this->authorize('manage', [Activity::class, $post->project]);
 
-        // ✅ Validasi input
-        try {
-            $validated = $request->validate([
-                'activities' => 'required|array',
-                'activities.*.id' => 'nullable|integer|exists:activities,id',
+     public function update(Request $request)
+{
+    // ================= VALIDATION =================
+    try {
+        $validated = $request->validate([
+            'project_id' => 'nullable|exists:projects,id',
+            'post_id'    => 'nullable|exists:posts,id',
 
-                'activities.*.name'     => 'required|string|max:100',
-                'activities.*.location' => 'required|string|max:100',
-                'activities.*.active'   => 'boolean',
+            'activities' => 'required|array',
+            'activities.*.id' => 'nullable|integer|exists:activities,id',
 
-                'activities.*.assignment_times' => 'required|array|min:1',
-                'activities.*.assignment_times.*.id' => 'nullable|integer|exists:activity_assignment_times,id',
-                'activities.*.assignment_times.*.assignment_id' => 'required|integer|exists:assignments,id',
-                'activities.*.assignment_times.*.start_time'    => 'required|date_format:H:i',
-                'activities.*.assignment_times.*.end_time'      => 'required|date_format:H:i|after:start_time',
-            ]);
-        } catch (ValidationException $e) {
-            return response()->json([
-                'success'     => false,
-                'message'     => 'Validation failed',
-                'status_code' => 422,
-                'errors'      => $e->errors(),
-            ], 422);
+            'activities.*.name'     => 'required|string|max:100',
+            'activities.*.location' => 'required|string|max:100',
+            'activities.*.active'   => 'boolean',
+
+            'activities.*.assignment_times' => 'required|array|min:1',
+            'activities.*.assignment_times.*.id' => 'nullable|integer|exists:activity_assignment_times,id',
+            'activities.*.assignment_times.*.assignment_id' => 'required|exists:assignments,id',
+            'activities.*.assignment_times.*.start_time'    => 'required|date_format:H:i',
+            'activities.*.assignment_times.*.end_time'      => 'required|date_format:H:i|after:start_time',
+        ]);
+    } catch (ValidationException $e) {
+        return response()->json([
+            'message' => 'Validation failed',
+            'errors'  => $e->errors(),
+        ], 422);
+    }
+
+    // ================= VALIDASI RELASI =================
+    if (!$validated['project_id'] && !$validated['post_id']) {
+        return response()->json([
+            'message' => 'Harus pilih project_id atau post_id',
+        ], 422);
+    }
+
+    // ================= AMBIL PROJECT =================
+    if (!empty($validated['post_id'])) {
+        $post = Post::findOrFail($validated['post_id']);
+        $projectId = $post->project_id;
+    } else {
+        $projectId = $validated['project_id'];
+        $post = null;
+    }
+
+    $activitiesPayload = collect($validated['activities']);
+
+    // ================= TRANSACTION =================
+    $updatedActivities = DB::transaction(function () use ($activitiesPayload, $projectId, $post) {
+
+        // 🔥 ambil existing berdasarkan scope
+        $existingActivities = Activity::where('project_id', $projectId)
+            ->when($post, fn($q) => $q->where('post_id', $post->id))
+            ->with('assignmentTimes')
+            ->get()
+            ->keyBy('id');
+
+        // id dari request
+        $incomingActivityIds = $activitiesPayload
+            ->pluck('id')
+            ->filter()
+            ->values()
+            ->all();
+
+        // DELETE activity yang tidak dikirim
+        $activitiesToDelete = $existingActivities
+            ->whereNotIn('id', $incomingActivityIds);
+
+        foreach ($activitiesToDelete as $activity) {
+            $activity->assignmentTimes()->delete();
+            $activity->delete();
         }
 
-        $activitiesPayload = collect($validated['activities']);
+        $result = collect();
 
-        // 💾 Semua operasi dalam satu transaksi
-        $updatedActivities = DB::transaction(function () use ($activitiesPayload, $post) {
-            // Ambil semua activity existing milik post ini
-            $existingActivities = $post->activities()
-                ->with('assignmentTimes')
+        // ================= LOOP CREATE / UPDATE =================
+        foreach ($activitiesPayload as $activityData) {
+
+            $activityId = $activityData['id'] ?? null;
+
+            if ($activityId && $existingActivities->has($activityId)) {
+                // 🔁 UPDATE
+                $activity = $existingActivities->get($activityId);
+
+                $activity->update([
+                    'name'     => $activityData['name'],
+                    'location' => $activityData['location'],
+                    'active'   => $activityData['active'] ?? $activity->active,
+                ]);
+            } else {
+                // 🆕 CREATE
+                $activity = Activity::create([
+                    'project_id' => $projectId,
+                    'post_id'    => $post?->id,
+                    'name'       => $activityData['name'],
+                    'location'   => $activityData['location'],
+                    'active'     => $activityData['active'] ?? true,
+                ]);
+            }
+
+            // ================= SYNC ASSIGNMENT TIMES =================
+            $existingTimes = $activity->assignmentTimes()
                 ->get()
                 ->keyBy('id');
 
-            // ID activity yang dikirim dari frontend (hanya yang punya id)
-            $incomingActivityIds = $activitiesPayload
+            $timesPayload = collect($activityData['assignment_times']);
+
+            $incomingTimeIds = $timesPayload
                 ->pluck('id')
                 ->filter()
                 ->values()
                 ->all();
 
-            // Activity yang harus dihapus = ada di DB tapi tidak ada di payload
-            $activitiesToDelete = $existingActivities
-                ->whereNotIn('id', $incomingActivityIds);
-
-            foreach ($activitiesToDelete as $activity) {
-                // Hapus assignment_times dahulu (kalau tidak cascade)
-                $activity->assignmentTimes()->delete();
-                $activity->delete();
+            // DELETE
+            $timesToDelete = $existingTimes->whereNotIn('id', $incomingTimeIds);
+            foreach ($timesToDelete as $time) {
+                $time->delete();
             }
 
-            $result = collect();
+            // CREATE / UPDATE
+            foreach ($timesPayload as $timeData) {
 
-            // Loop semua activity dari payload (create + update)
-            foreach ($activitiesPayload as $activityData) {
-                $activityId = $activityData['id'] ?? null;
+                $assignment = Assignment::findOrFail($timeData['assignment_id']);
 
-                if ($activityId && $existingActivities->has($activityId)) {
-                    // 🔁 UPDATE ACTIVITY
-                    /** @var \App\Models\Activity $activity */
-                    $activity = $existingActivities->get($activityId);
+                // 🔒 VALIDASI PROJECT
+                if ($assignment->project_id !== $projectId) {
+                    throw ValidationException::withMessages([
+                        'assignment_times' => ['Assignment tidak sesuai project'],
+                    ]);
+                }
 
-                    // Safety: pastikan activity benar‑benar milik post ini
-                    if ($activity->post_id !== $post->id) {
+                $timeId = $timeData['id'] ?? null;
+
+                if ($timeId && $existingTimes->has($timeId)) {
+                    // UPDATE
+                    $time = $existingTimes->get($timeId);
+
+                    if ($time->activity_id !== $activity->id) {
                         throw ValidationException::withMessages([
-                            'activities' => ['Activity tidak milik post ini.'],
+                            'assignment_times' => ['Data tidak valid'],
                         ]);
                     }
 
-                    $activity->update([
-                        'name'     => $activityData['name'],
-                        'location' => $activityData['location'],
-                        'active'   => $activityData['active'] ?? $activity->active,
+                    $time->update([
+                        'assignment_id' => $timeData['assignment_id'],
+                        'start_time'    => $timeData['start_time'],
+                        'end_time'      => $timeData['end_time'],
                     ]);
                 } else {
-                    // 🆕 CREATE ACTIVITY BARU
-                    $activity = $post->activities()->create([
-                        'name'     => $activityData['name'],
-                        'location' => $activityData['location'],
-                        'active'   => $activityData['active'] ?? true,
+                    // CREATE
+                    $activity->assignmentTimes()->create([
+                        'assignment_id' => $timeData['assignment_id'],
+                        'start_time'    => $timeData['start_time'],
+                        'end_time'      => $timeData['end_time'],
                     ]);
                 }
-
-                // ====== SYNC ASSIGNMENT_TIMES UNTUK ACTIVITY INI ======
-                $existingTimes = $activity->assignmentTimes()
-                    ->get()
-                    ->keyBy('id');
-
-                $timesPayload = collect($activityData['assignment_times']);
-
-                $incomingTimeIds = $timesPayload
-                    ->pluck('id')
-                    ->filter()
-                    ->values()
-                    ->all();
-
-                // DELETE: time yang ada di DB tapi tidak dikirim
-                $timesToDelete = $existingTimes
-                    ->whereNotIn('id', $incomingTimeIds);
-
-                foreach ($timesToDelete as $time) {
-                    $time->delete();
-                }
-
-                // CREATE / UPDATE: loop semua times yang dikirim
-                foreach ($timesPayload as $timeData) {
-                    $timeId = $timeData['id'] ?? null;
-
-                    // Cek assignment belong ke project yang sama
-                    $assignment = Assignment::find($timeData['assignment_id']);
-                    if (!$assignment || $assignment->project_id !== $post->project_id) {
-                        throw ValidationException::withMessages([
-                            'activities' => ['Assignment tidak berada pada project yang sama dengan post.'],
-                        ]);
-                    }
-
-                    if ($timeId && $existingTimes->has($timeId)) {
-                        // 🔁 UPDATE assignment_time
-                        $time = $existingTimes->get($timeId);
-
-                        // Safety: pastikan time milik activity ini
-                        if ($time->activity_id !== $activity->id) {
-                            throw ValidationException::withMessages([
-                                'activities' => ['Activity assignment time tidak milik activity ini.'],
-                            ]);
-                        }
-
-                        $time->update([
-                            'assignment_id' => $timeData['assignment_id'],
-                            'start_time'    => $timeData['start_time'],
-                            'end_time'      => $timeData['end_time'],
-                        ]);
-                    } else {
-                        // 🆕 CREATE assignment_time BARU
-                        $activity->assignmentTimes()->create([
-                            'assignment_id' => $timeData['assignment_id'],
-                            'start_time'    => $timeData['start_time'],
-                            'end_time'      => $timeData['end_time'],
-                        ]);
-                    }
-                }
-
-                $result->push(
-                    $activity->load('assignmentTimes')
-                );
             }
 
-            return $result->values();
-        });
+            $result->push($activity->load('assignmentTimes'));
+        }
 
-        return response()->json([
-            'message' => 'Activities updated successfully',
-            'data'    => $updatedActivities,
-        ], 200);
-    }
+        return $result->values();
+    });
+
+    return response()->json([
+        'message' => 'Activities updated successfully',
+        'data'    => $updatedActivities,
+    ], 200);
+}
+    // public function update(Request $request, Post $post)
+    // {
+    //     // 🔒 Authorization
+    //     $this->authorize('manage', [Activity::class, $post->project]);
+
+    //     // ✅ Validasi input
+    //     try {
+    //         $validated = $request->validate([
+    //             'activities' => 'required|array',
+    //             'activities.*.id' => 'nullable|integer|exists:activities,id',
+
+    //             'activities.*.name'     => 'required|string|max:100',
+    //             'activities.*.location' => 'required|string|max:100',
+    //             'activities.*.active'   => 'boolean',
+
+    //             'activities.*.assignment_times' => 'required|array|min:1',
+    //             'activities.*.assignment_times.*.id' => 'nullable|integer|exists:activity_assignment_times,id',
+    //             'activities.*.assignment_times.*.assignment_id' => 'required|integer|exists:assignments,id',
+    //             'activities.*.assignment_times.*.start_time'    => 'required|date_format:H:i',
+    //             'activities.*.assignment_times.*.end_time'      => 'required|date_format:H:i|after:start_time',
+    //         ]);
+    //     } catch (ValidationException $e) {
+    //         return response()->json([
+    //             'success'     => false,
+    //             'message'     => 'Validation failed',
+    //             'status_code' => 422,
+    //             'errors'      => $e->errors(),
+    //         ], 422);
+    //     }
+
+    //     $activitiesPayload = collect($validated['activities']);
+
+    //     // 💾 Semua operasi dalam satu transaksi
+    //     $updatedActivities = DB::transaction(function () use ($activitiesPayload, $post) {
+    //         // Ambil semua activity existing milik post ini
+    //         $existingActivities = $post->activities()
+    //             ->with('assignmentTimes')
+    //             ->get()
+    //             ->keyBy('id');
+
+    //         // ID activity yang dikirim dari frontend (hanya yang punya id)
+    //         $incomingActivityIds = $activitiesPayload
+    //             ->pluck('id')
+    //             ->filter()
+    //             ->values()
+    //             ->all();
+
+    //         // Activity yang harus dihapus = ada di DB tapi tidak ada di payload
+    //         $activitiesToDelete = $existingActivities
+    //             ->whereNotIn('id', $incomingActivityIds);
+
+    //         foreach ($activitiesToDelete as $activity) {
+    //             // Hapus assignment_times dahulu (kalau tidak cascade)
+    //             $activity->assignmentTimes()->delete();
+    //             $activity->delete();
+    //         }
+
+    //         $result = collect();
+
+    //         // Loop semua activity dari payload (create + update)
+    //         foreach ($activitiesPayload as $activityData) {
+    //             $activityId = $activityData['id'] ?? null;
+
+    //             if ($activityId && $existingActivities->has($activityId)) {
+    //                 // 🔁 UPDATE ACTIVITY
+    //                 /** @var \App\Models\Activity $activity */
+    //                 $activity = $existingActivities->get($activityId);
+
+    //                 // Safety: pastikan activity benar‑benar milik post ini
+    //                 if ($activity->post_id !== $post->id) {
+    //                     throw ValidationException::withMessages([
+    //                         'activities' => ['Activity tidak milik post ini.'],
+    //                     ]);
+    //                 }
+
+    //                 $activity->update([
+    //                     'name'     => $activityData['name'],
+    //                     'location' => $activityData['location'],
+    //                     'active'   => $activityData['active'] ?? $activity->active,
+    //                 ]);
+    //             } else {
+    //                 // 🆕 CREATE ACTIVITY BARU
+    //                 $activity = $post->activities()->create([
+    //                     'name'     => $activityData['name'],
+    //                     'location' => $activityData['location'],
+    //                     'active'   => $activityData['active'] ?? true,
+    //                 ]);
+    //             }
+
+    //             // ====== SYNC ASSIGNMENT_TIMES UNTUK ACTIVITY INI ======
+    //             $existingTimes = $activity->assignmentTimes()
+    //                 ->get()
+    //                 ->keyBy('id');
+
+    //             $timesPayload = collect($activityData['assignment_times']);
+
+    //             $incomingTimeIds = $timesPayload
+    //                 ->pluck('id')
+    //                 ->filter()
+    //                 ->values()
+    //                 ->all();
+
+    //             // DELETE: time yang ada di DB tapi tidak dikirim
+    //             $timesToDelete = $existingTimes
+    //                 ->whereNotIn('id', $incomingTimeIds);
+
+    //             foreach ($timesToDelete as $time) {
+    //                 $time->delete();
+    //             }
+
+    //             // CREATE / UPDATE: loop semua times yang dikirim
+    //             foreach ($timesPayload as $timeData) {
+    //                 $timeId = $timeData['id'] ?? null;
+
+    //                 // Cek assignment belong ke project yang sama
+    //                 $assignment = Assignment::find($timeData['assignment_id']);
+    //                 if (!$assignment || $assignment->project_id !== $post->project_id) {
+    //                     throw ValidationException::withMessages([
+    //                         'activities' => ['Assignment tidak berada pada project yang sama dengan post.'],
+    //                     ]);
+    //                 }
+
+    //                 if ($timeId && $existingTimes->has($timeId)) {
+    //                     // 🔁 UPDATE assignment_time
+    //                     $time = $existingTimes->get($timeId);
+
+    //                     // Safety: pastikan time milik activity ini
+    //                     if ($time->activity_id !== $activity->id) {
+    //                         throw ValidationException::withMessages([
+    //                             'activities' => ['Activity assignment time tidak milik activity ini.'],
+    //                         ]);
+    //                     }
+
+    //                     $time->update([
+    //                         'assignment_id' => $timeData['assignment_id'],
+    //                         'start_time'    => $timeData['start_time'],
+    //                         'end_time'      => $timeData['end_time'],
+    //                     ]);
+    //                 } else {
+    //                     // 🆕 CREATE assignment_time BARU
+    //                     $activity->assignmentTimes()->create([
+    //                         'assignment_id' => $timeData['assignment_id'],
+    //                         'start_time'    => $timeData['start_time'],
+    //                         'end_time'      => $timeData['end_time'],
+    //                     ]);
+    //                 }
+    //             }
+
+    //             $result->push(
+    //                 $activity->load('assignmentTimes')
+    //             );
+    //         }
+
+    //         return $result->values();
+    //     });
+
+    //     return response()->json([
+    //         'message' => 'Activities updated successfully',
+    //         'data'    => $updatedActivities,
+    //     ], 200);
+    // }
 
     /**
      * UPDATE ACTIVITY TUNGGAL

@@ -14,11 +14,17 @@ class Activity extends Model
         'name',
         'location',
         'active',
+        'project_id',
     ];
 
     public function post()
     {
         return $this->belongsTo(Post::class);
+    }
+
+    public function project()
+    {
+        return $this->belongsTo(Project::class);
     }
     
     public function assignmentTimes()
