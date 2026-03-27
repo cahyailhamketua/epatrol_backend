@@ -101,17 +101,21 @@ class OffDayOvertimeService
             throw new \InvalidArgumentException('Schedule is not an off-day assignment.');
         }
 
-        return OvertimeLog::create([
-            'project_id' => $schedule->project_id,
-            'user_id' => $schedule->user_id,
-            'schedule_id' => $schedule->id,
-            'attendance_id' => $attendance->id,
-            'scheduled_assignment_id' => $scheduled->id,
-            'work_assignment_id' => $workAssignment->id,
-            'date' => $schedule->date,
-            'display_code' => $this->buildDisplayCode($workAssignment->code),
-            'minutes' => 0,
-        ]);
+        // schedule_id di overtime_logs bersifat unique.
+        // Saat check-in OFF di-edit/re-checkin, record harus di-update, bukan insert baru.
+        return OvertimeLog::updateOrCreate(
+            ['schedule_id' => $schedule->id],
+            [
+                'project_id' => $schedule->project_id,
+                'user_id' => $schedule->user_id,
+                'attendance_id' => $attendance->id,
+                'scheduled_assignment_id' => $scheduled->id,
+                'work_assignment_id' => $workAssignment->id,
+                'date' => $schedule->date,
+                'display_code' => $this->buildDisplayCode($workAssignment->code),
+                'minutes' => 0,
+            ]
+        );
     }
 
     public function finalizeMinutes(OvertimeLog $log, int $minutes): OvertimeLog

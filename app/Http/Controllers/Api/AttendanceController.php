@@ -37,7 +37,15 @@ class AttendanceController extends Controller
         $user = Auth::user();
 
         // Query builder berdasarkan role
-        $query = Attendance::with('assignment', 'post', 'user', 'schedule');
+        $query = Attendance::with([
+            'assignment',
+            'post',
+            'user',
+            'schedule',
+            'project.organization',
+            'overtimeLog.workAssignment',
+            'overtimeLog.scheduledAssignment',
+        ]);
 
         // DEV bisa lihat semua
         if ($user->role === 'dev') {
@@ -76,7 +84,9 @@ class AttendanceController extends Controller
         $attendances = $query->paginate(15);
 
         return response()->json([
-            'data' => $attendances->items(),
+            'data' => collect($attendances->items())
+                ->map(fn ($attendance) => $this->formatAttendanceResponse($attendance))
+                ->values(),
             'pagination' => [
                 'total' => $attendances->total(),
                 'per_page' => $attendances->perPage(),
@@ -117,18 +127,15 @@ class AttendanceController extends Controller
         }
 
         $deviceDateTime = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, 'Asia/Jakarta');
-        $today = $deviceDateTime->toDateString();
+        $originalToday = $deviceDateTime->toDateString();
 
-        // Check schedule untuk validasi assignment time
-        $schedule = Schedule::where('user_id', $user->id)
-            ->where('date', $today)
-            ->with('assignment', 'project')
-            ->first();
+        // Mengambil target shift secara valid (mendukung shift lintas malam)
+        [$schedule, $today] = $this->resolveActiveScheduleForCheckIn($user, $request->current_time);
 
         if (! $schedule) {
             return response()->json([
                 'message' => 'Anda tidak memiliki jadwal hari ini.',
-                'date' => $today,
+                'date' => $originalToday,
             ], 403);
         }
 
@@ -338,52 +345,49 @@ class AttendanceController extends Controller
             return response()->json($validator->errors(), 422);
         }
 
-        // PENTING: Extract DATE dari device time terlebih dahulu (sebelum load schedule)
-        // Gunakan default timezone untuk parse, karena project belum di-load
+        // PENTING: Resolve schedule dan shift timezone independent via helper (support midnight shift)
         $deviceDateTime = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, 'Asia/Jakarta');
-        $today = $deviceDateTime->toDateString(); // e.g., "2026-02-13"
-        $todayCarbon = Carbon::parse($today);
+        $originalToday = $deviceDateTime->toDateString(); 
 
-        // GUARD 0: Cek attendance hari lalu yang belum checkout
-        $yesterdayUnclosed = Attendance::where('user_id', $user->id)
-            ->where('date', '<', $today)
-            ->whereNotNull('check_in_at')
-            ->whereNull('check_out_at')
-            ->first();
-
-        if ($yesterdayUnclosed) {
-            $yesterdayDate = $yesterdayUnclosed->date->translatedFormat('d F Y');
-
-            return response()->json([
-                'message' => 'Anda memiliki attendance hari sebelumnya yang belum di-close.',
-                'info' => 'Absen '.$yesterdayDate.' belum check-out. Silakan check-out terlebih dahulu.',
-                'unclosed_attendance' => [
-                    'id' => $yesterdayUnclosed->id,
-                    'date' => $yesterdayUnclosed->date->format('Y-m-d'),
-                    'check_in_at' => $yesterdayUnclosed->check_in_at->format('H:i:s'),
-                ],
-            ], 403);
-        }
-
-        // Jika sudah check-in hari ini, request check-in berikutnya akan dianggap EDIT.
-        $existingAttendance = Attendance::where('user_id', $user->id)
-            ->where('date', $today)
-            ->whereNotNull('check_in_at')
-            ->orderByDesc('check_in_at')
-            ->first();
-
-        // GUARD 2: Wajib punya schedule hari ini (hanya untuk validasi assignment time)
-        $schedule = Schedule::where('user_id', $user->id)
-            ->where('date', $today)
-            ->with('assignment', 'project')
-            ->first();
+        [$schedule, $today] = $this->resolveActiveScheduleForCheckIn($user, $request->current_time);
 
         if (! $schedule) {
             return response()->json([
                 'message' => 'Anda tidak memiliki jadwal hari ini.',
-                'date' => $today,
+                'date' => $originalToday,
             ], 403);
         }
+
+        $todayCarbon = Carbon::parse($today);
+
+        // GUARD 0: Cari attendance aktif (belum check-out) berdasarkan user_id.
+        // Ini memastikan server-side check lintas device (tidak bergantung shared preference mobile).
+        $activeUnclosedAttendance = Attendance::where('user_id', $user->id)
+            ->whereNotNull('check_in_at')
+            ->whereNull('check_out_at')
+            ->orderByDesc('check_in_at')
+            ->first();
+
+        // Jika ada attendance aktif di tanggal berbeda (bukan tanggal shift berjalan), wajib check-out dulu.
+        if ($activeUnclosedAttendance && $activeUnclosedAttendance->date->format('Y-m-d') !== $today) {
+            $activeDate = $activeUnclosedAttendance->date->translatedFormat('d F Y');
+
+            return response()->json([
+                'message' => 'Anda masih memiliki attendance aktif yang belum di-close.',
+                'info' => 'Absen '.$activeDate.' belum check-out. Silakan check-out terlebih dahulu.',
+                'unclosed_attendance' => [
+                    'id' => $activeUnclosedAttendance->id,
+                    'date' => $activeUnclosedAttendance->date->format('Y-m-d'),
+                    'check_in_at' => $activeUnclosedAttendance->check_in_at->format('H:i:s'),
+                ],
+            ], 403);
+        }
+
+        // Jika attendance aktif ada di shift yang sama, request check-in dianggap EDIT.
+        $existingAttendance = $activeUnclosedAttendance
+            && $activeUnclosedAttendance->date->format('Y-m-d') === $today
+            ? $activeUnclosedAttendance
+            : null;
 
         // Determine post (dari project user)
         // Komandan regu & admin_project tidak perlu post_id.
@@ -1009,33 +1013,31 @@ class AttendanceController extends Controller
 
         $today = $nowInProjectTz->toDateString();
 
-        // Ambil schedule project untuk hari tsb (beserta assignment)
+        $yesterday = $nowInProjectTz->copy()->subDay()->toDateString();
+        
+        // Ambil schedule project untuk hari ini dan kemarin (mendukung lintas malam)
         $schedulesToday = Schedule::where('project_id', $projectId)
-            ->where('date', $today)
+            ->whereIn('date', [$today, $yesterday])
             ->with('assignment')
             ->get();
 
         // Filter schedule berdasarkan assignment yang sedang aktif saat ini
-        $activeSchedules = $schedulesToday->filter(function ($schedule) use ($nowInProjectTz, $today, $projectTimezone) {
+        $activeSchedules = $schedulesToday->filter(function ($schedule) use ($nowInProjectTz, $projectTimezone) {
             if (! $schedule->assignment) {
                 return false;
             }
 
-            $start = Carbon::createFromFormat('Y-m-d H:i:s', $today.' '.$schedule->assignment->start_time, $projectTimezone);
-            $end = Carbon::createFromFormat('Y-m-d H:i:s', $today.' '.$schedule->assignment->end_time, $projectTimezone);
+            // Gunakan date schedule yang sebenarnya (bisa jadi yesterday)
+            $schDate = $schedule->date instanceof \Carbon\Carbon ? $schedule->date->format('Y-m-d') : \Carbon\Carbon::parse($schedule->date)->format('Y-m-d');
+            $start = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$schedule->assignment->start_time, $projectTimezone);
+            $end = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$schedule->assignment->end_time, $projectTimezone);
 
             // Handle midnight shift: end <= start berarti melewati tengah malam
             if ($end->lessThanOrEqualTo($start)) {
                 $end->addDay();
             }
 
-            // Heuristik ringan untuk midnight shift saat now < start
-            $now = $nowInProjectTz->copy();
-            if ($end->greaterThan($start) && $now->lessThan($start) && $end->diffInHours($start) > 12) {
-                $now->addDay();
-            }
-
-            return $now->greaterThanOrEqualTo($start) && $now->lessThan($end);
+            return $nowInProjectTz->greaterThanOrEqualTo($start) && $nowInProjectTz->lessThan($end);
         })->values();
 
         // Ambil daftar post (slot progress tim)
@@ -1085,7 +1087,7 @@ class AttendanceController extends Controller
 
         // Attendance untuk semua schedule aktif (anggota dan danru)
         $attendances = Attendance::whereIn('schedule_id', $scheduleIds)
-            ->where('date', $today)
+            // Tanpa klausa where(date, today) agar attendance yang bermula kemarin dapat ditemukan
             ->with(['user', 'post'])
             ->get();
 
@@ -1275,38 +1277,52 @@ class AttendanceController extends Controller
 
         $user = Auth::user();
 
-        // MODIFIED: If attendance_id not provided, find active attendance from token
-        if ($request->has('attendance_id')) {
-            // OLD: Use provided attendance_id
-            // OLD: $attendance = Attendance::where('id', $request->attendance_id)
-            //     ->where('user_id', $user->id)
-            //     ->with('assignment', 'post')
-            //     ->first();
+        // MODIFIED: FORCE fetch active attendance using token
+        // Client says "checkout directly by sending user token and server resolves active pending checkout"
+        $attendance = Attendance::where('user_id', $user->id)
+            ->whereNotNull('check_in_at')
+            ->whereNull('check_out_at')
+            ->orderBy('date', 'desc')
+            ->orderBy('check_in_at', 'desc')
+            ->with('assignment', 'post')
+            ->first();
 
-            // NEW: Use provided attendance_id
+        // Tembakan fallback bila secara mengejutkan user tidak terdeteksi punya unclosed, tetapi manual request memintanya
+        if (! $attendance && $request->has('attendance_id')) {
             $attendance = Attendance::where('id', $request->attendance_id)
                 ->where('user_id', $user->id)
-                ->with('assignment', 'post')
-                ->first();
-        } else {
-            // NEW: Get active attendance from token (user with checked-in but not checked-out)
-            // Cari attendance aktif terbaru tanpa membatasi ke tanggal server hari ini,
-            // supaya tetap ketemu meskipun device time beda hari (lebih maju / mundur).
-            $attendance = Attendance::where('user_id', $user->id)
-                ->whereNotNull('check_in_at')
-                ->whereNull('check_out_at')
-                ->orderBy('date', 'desc')
-                ->orderBy('check_in_at', 'desc')
                 ->with('assignment', 'post')
                 ->first();
         }
 
         if (! $attendance) {
-            return response()->json(['message' => 'Attendance tidak valid'], 404);
+            $activeAttendance = Attendance::where('user_id', $user->id)
+                ->whereNotNull('check_in_at')
+                ->whereNull('check_out_at')
+                ->orderByDesc('check_in_at')
+                ->first();
+
+            return response()->json([
+                'message' => 'Attendance tidak valid',
+                'active_attendance_id' => $activeAttendance ? (int) $activeAttendance->id : null,
+            ], 404);
         }
 
         // Attendance harus aktif untuk check-out (sudah check-in & belum check-out)
         if (! $attendance->check_in_at || $attendance->check_out_at) {
+            $activeAttendance = Attendance::where('user_id', $user->id)
+                ->whereNotNull('check_in_at')
+                ->whereNull('check_out_at')
+                ->orderByDesc('check_in_at')
+                ->first();
+
+            if ($activeAttendance) {
+                return response()->json([
+                    'message' => 'Attendance tidak valid. Gunakan attendance aktif yang belum check-out.',
+                    'active_attendance_id' => (int) $activeAttendance->id,
+                ], 409);
+            }
+
             return response()->json(['message' => 'Attendance tidak valid'], 400);
         }
 
@@ -1504,7 +1520,87 @@ class AttendanceController extends Controller
         ]);
     }
 
-    // Helper function to calculate distance between two coordinates (Haversine formula)
+    /**
+     * Resolve schedule yang aktif untuk waktu check-in, mendukung shift lintas malam (midnight shift).
+     * Memeriksa jadwal hari ini dan kemarin, dan menyeleksi jadwal dengan jam shift terkemungkinan.
+     */
+    private function resolveActiveScheduleForCheckIn($user, $currentTimeStr)
+    {
+        $deviceDateTime = Carbon::createFromFormat('Y-m-d H:i:s', $currentTimeStr, 'Asia/Jakarta');
+        $todayStr = $deviceDateTime->toDateString();
+        $yesterdayStr = $deviceDateTime->copy()->subDay()->toDateString();
+
+        $schedules = Schedule::where('user_id', $user->id)
+            ->whereIn('date', [$todayStr, $yesterdayStr])
+            ->with('assignment', 'project')
+            ->get();
+
+        if ($schedules->isEmpty()) {
+            return [null, $todayStr];
+        }
+
+        $validSchedules = [];
+        $offDutySchedule = null;
+
+        foreach ($schedules as $sch) {
+            if (!$sch->project || !$sch->assignment) continue;
+
+            $projectTz = $sch->project->timezone ?? $sch->project->organization->timezone ?? 'Asia/Jakarta';
+            $nowTz = Carbon::createFromFormat('Y-m-d H:i:s', $currentTimeStr, $projectTz)->setTimezone('UTC');
+
+            if ($sch->assignment->isOffDuty()) {
+                if ($sch->date instanceof \Carbon\Carbon ? $sch->date->format('Y-m-d') === $todayStr : \Carbon\Carbon::parse($sch->date)->format('Y-m-d') === $todayStr) {
+                    $offDutySchedule = $sch;
+                }
+                continue;
+            }
+
+            $schDate = $sch->date instanceof \Carbon\Carbon ? $sch->date->format('Y-m-d') : \Carbon\Carbon::parse($sch->date)->format('Y-m-d');
+            $start = Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$sch->assignment->start_time, $projectTz)->setTimezone('UTC');
+            $end = Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$sch->assignment->end_time, $projectTz)->setTimezone('UTC');
+
+            if ($end->lessThanOrEqualTo($start)) {
+                $end->addDay();  // Shift terlewati tengah malam, selesai esoknya
+            }
+
+            // Rentang check-in yang masuk akal: 4 jam sebelum shift dimulai hingga 18 jam sesudah dimulai
+            // Jika Anda check-in di 01:00 am dan jadwal Anda di hari kemarin dimulai 22:00,
+            // (01:00 terhitung +3 jam dari start, jadi masuk rentang interval ini dengan valid)
+            if ($nowTz->greaterThanOrEqualTo($start->copy()->subHours(4)) && $nowTz->lessThan($start->copy()->addHours(18))) {
+                $validSchedules[] = [
+                    'schedule' => $sch,
+                    'start' => $start
+                ];
+            }
+        }
+
+        if (!empty($validSchedules)) {
+            // Prioritaskan schedule shift yang paling maju/terbaru jika rentang masuk di dua hari (mencegah bentrok)
+            usort($validSchedules, function($a, $b) {
+                return $b['start']->timestamp - $a['start']->timestamp;
+            });
+            $bestSchedule = $validSchedules[0]['schedule'];
+            $schDate = $bestSchedule->date instanceof \Carbon\Carbon ? $bestSchedule->date->format('Y-m-d') : \Carbon\Carbon::parse($bestSchedule->date)->format('Y-m-d');
+            return [$bestSchedule, $schDate];
+        }
+
+        if ($offDutySchedule) {
+            $offDate = $offDutySchedule->date instanceof \Carbon\Carbon ? $offDutySchedule->date->format('Y-m-d') : \Carbon\Carbon::parse($offDutySchedule->date)->format('Y-m-d');
+            return [$offDutySchedule, $offDate];
+        }
+
+        $todaySch = $schedules->firstWhere(function ($s) use ($todayStr) {
+            $schDt = $s->date instanceof \Carbon\Carbon ? $s->date->format('Y-m-d') : \Carbon\Carbon::parse($s->date)->format('Y-m-d');
+            return $schDt === $todayStr;
+        });
+
+        if ($todaySch) {
+            return [$todaySch, $todayStr];
+        }
+
+        return [null, $todayStr];
+    }
+
     private function calculateDistance($lat1, $lon1, $lat2, $lon2)
     {
         // Validate and cast to float
@@ -1546,6 +1642,18 @@ class AttendanceController extends Controller
         $project = $attendance->project;
         $timezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
 
+        $overtimeLog = null;
+        $displayAssignment = $assignment;
+        if ($assignment && $assignment->isOffDuty()) {
+            $overtimeLog = $attendance->relationLoaded('overtimeLog')
+                ? $attendance->overtimeLog
+                : $attendance->overtimeLog()->with(['scheduledAssignment', 'workAssignment'])->first();
+            if ($overtimeLog?->workAssignment) {
+                // Untuk schedule OFF, assignment yang ditampilkan mengikuti work_assignment (mis. P/M)
+                $displayAssignment = $overtimeLog->workAssignment;
+            }
+        }
+
         $dateFormatted = $attendance->date->translatedFormat('d F Y'); // e.g., "12 Februari 2026"
 
         // Convert check-in time to project timezone
@@ -1564,13 +1672,22 @@ class AttendanceController extends Controller
             ],
             'schedule' => [
                 'assignment' => [
-                    'code' => $assignment->code,  // P (Pagi), M (Malam), O (OFF)
-                    'name' => $assignment->name,
-                    'start_time' => $assignment->start_time,
-                    'end_time' => $assignment->end_time,
-                    'grace_period' => $assignment->grace_period.' minutes',
-                    'is_off_duty' => $assignment->isOffDuty(),
+                    'id' => $displayAssignment?->id,
+                    'code' => $displayAssignment?->code,  // Untuk OFF akan tampil code work_assignment (mis. P/M)
+                    'name' => $displayAssignment?->name,
+                    'start_time' => $displayAssignment?->start_time,
+                    'end_time' => $displayAssignment?->end_time,
+                    'grace_period' => ($displayAssignment?->grace_period ?? 0).' minutes',
+                    'is_off_duty' => $displayAssignment?->isOffDuty() ?? false,
                 ],
+                // 'scheduled_assignment' => $overtimeLog?->scheduledAssignment ? [
+                //     'code' => $overtimeLog->scheduledAssignment->code,
+                //     'name' => $overtimeLog->scheduledAssignment->name,
+                // ] : null,
+                // 'work_assignment' => $overtimeLog?->workAssignment ? [
+                //     'code' => $overtimeLog->workAssignment->code,
+                //     'name' => $overtimeLog->workAssignment->name,
+                // ] : null,
                 'post' => [
                     'id' => $post?->id,
                     'name' => $post?->name,
