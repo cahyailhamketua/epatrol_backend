@@ -14,6 +14,12 @@ use App\Services\ScheduleGeneratorService;
 use App\Services\ScheduleSheetService;
 use Illuminate\Http\Request;
 use Illuminate\Validation\ValidationException;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use PhpOffice\PhpSpreadsheet\Cell\Coordinate;
+use PhpOffice\PhpSpreadsheet\Style\Alignment;
+use PhpOffice\PhpSpreadsheet\Style\Border;
+use PhpOffice\PhpSpreadsheet\Style\Fill;
 
 class ScheduleController extends Controller
 {
@@ -552,53 +558,169 @@ class ScheduleController extends Controller
         }
 
         $fileName = sprintf(
-            'schedule_project_%d_%s.csv',
+            'schedule_project_%d_%s.xlsx',
             $project->id,
             str_replace('-', '', $month)
         );
 
-        return response()->streamDownload(function () use ($data, $days) {
-            $handle = fopen('php://output', 'w');
+        return response()->streamDownload(function () use ($data, $days, $project, $month) {
+            $spreadsheet = new Spreadsheet();
+            $sheet = $spreadsheet->getActiveSheet();
+            $sheet->setTitle('Schedule');
 
-            // Header
-            $header = ['User', 'Team'];
-            foreach ($days as $dayMeta) {
-                $header[] = $dayMeta['date'];
+            // Helpers
+            $cell = function (int $col, int $row): string {
+                return Coordinate::stringFromColumnIndex($col) . $row;
+            };
+            $dayCode = function (string $date): string {
+                $dow = \Carbon\Carbon::parse($date)->dayOfWeek; // 0=Sun
+                return match ($dow) {
+                    0 => 'MG',
+                    1 => 'SN',
+                    2 => 'SL',
+                    3 => 'RB',
+                    4 => 'KM',
+                    5 => 'JM',
+                    6 => 'SB',
+                    default => '',
+                };
+            };
+
+            // Layout constants
+            $colUser = 1; // A
+            $colTeam = 2; // B
+            $firstDayCol = 3; // C
+            $dayCount = count($days);
+            $lastDayCol = $firstDayCol + max(0, $dayCount - 1);
+            $summaryCols = [
+                'SCHEDULE_COUNT',
+                'HK',
+                'OT',
+                'OFF',
+                'SAKIT',
+                'IZIN',
+                'CUTI',
+                'ALPA',
+            ];
+            $firstSummaryCol = $lastDayCol + 1;
+            $lastSummaryCol = $firstSummaryCol + count($summaryCols) - 1;
+
+            // Title row
+            $titleRow = 1;
+            $headerRowDay = 2;
+            $headerRowDate = 3;
+            $row = 4;
+
+            $title = sprintf(
+                '%s %s',
+                \Carbon\Carbon::parse($month . '-01')->translatedFormat('F Y'),
+                $project->name ? ('- ' . $project->name) : ''
+            );
+            $sheet->setCellValue($cell($colUser, $titleRow), $title);
+            $sheet->mergeCells($cell($colUser, $titleRow) . ':' . $cell($lastSummaryCol, $titleRow));
+            $sheet->getStyle($cell($colUser, $titleRow))->getFont()->setBold(true)->setSize(14);
+            $sheet->getStyle($cell($colUser, $titleRow))->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
+
+            // Header left labels (merged vertically)
+            $sheet->setCellValue($cell($colUser, $headerRowDay), 'Nama');
+            $sheet->setCellValue($cell($colTeam, $headerRowDay), 'Tim');
+            $sheet->mergeCells($cell($colUser, $headerRowDay) . ':' . $cell($colUser, $headerRowDate));
+            $sheet->mergeCells($cell($colTeam, $headerRowDay) . ':' . $cell($colTeam, $headerRowDate));
+
+            // Day headers (two rows)
+            foreach ($days as $i => $dayMeta) {
+                $date = $dayMeta['date'];
+                $col = $firstDayCol + $i;
+                $sheet->setCellValue($cell($col, $headerRowDay), $dayCode($date));
+                $sheet->setCellValue($cell($col, $headerRowDate), (int) \Carbon\Carbon::parse($date)->format('d'));
             }
-            $header = array_merge($header, ['SCHEDULE_COUNT', 'HK', 'OT', 'OFF', 'SAKIT', 'IZIN', 'CUTI', 'ALPA']);
-            fputcsv($handle, $header);
 
-            // Rows
-            foreach ($data['rows'] as $row) {
-                $user = $row['user'];
-                $summary = $row['summary'] ?? [];
-                $daysData = $row['days'] ?? [];
+            // Summary headers (merged vertically)
+            foreach ($summaryCols as $i => $key) {
+                $col = $firstSummaryCol + $i;
+                $sheet->setCellValue($cell($col, $headerRowDay), $key);
+                $sheet->mergeCells($cell($col, $headerRowDay) . ':' . $cell($col, $headerRowDate));
+            }
 
-                $line = [
-                    $user['name'] ?? '',
-                    $user['team_name'] ?? '',
-                ];
+            // Header styling
+            $headerRange = $sheet->getStyle($cell($colUser, $headerRowDay) . ':' . $cell($lastSummaryCol, $headerRowDate));
+            $headerRange->getFont()->setBold(true);
+            $headerRange->getAlignment()
+                ->setHorizontal(Alignment::HORIZONTAL_CENTER)
+                ->setVertical(Alignment::VERTICAL_CENTER);
+            $headerRange->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFEFEFEF');
+            $headerRange->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
 
-                foreach ($days as $dayMeta) {
-                    $date = $dayMeta['date'];
-                    $line[] = isset($daysData[$date]) ? ($daysData[$date]['assignment'] ?? '') : '';
+            // Column widths
+            $sheet->getColumnDimension('A')->setWidth(26);
+            $sheet->getColumnDimension('B')->setWidth(18);
+            for ($c = $firstDayCol; $c <= $lastDayCol; $c++) {
+                $sheet->getColumnDimensionByColumn($c)->setWidth(4);
+            }
+            for ($c = $firstSummaryCol; $c <= $lastSummaryCol; $c++) {
+                $sheet->getColumnDimensionByColumn($c)->setWidth(14);
+            }
+
+            // Freeze header
+            $sheet->freezePane($cell($firstDayCol, $row));
+
+            // Group rows by team
+            $rows = collect($data['rows'] ?? []);
+            $groups = $rows->groupBy(fn ($r) => ($r['user']['team_name'] ?? 'Tanpa Tim') . '|' . ($r['user']['team_id'] ?? '0'));
+
+            foreach ($groups as $teamKey => $teamRows) {
+                [$teamName] = explode('|', (string) $teamKey, 2);
+
+                // Team header row
+                $sheet->setCellValue($cell($colUser, $row), $teamName);
+                $sheet->mergeCells($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
+                $teamStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
+                $teamStyle->getFont()->setBold(true);
+                $teamStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFDDEEFF');
+                $teamStyle->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
+                $row++;
+
+                // Member rows
+                foreach ($teamRows as $r) {
+                    $user = $r['user'] ?? [];
+                    $summary = $r['summary'] ?? [];
+                    $daysData = $r['days'] ?? [];
+
+                    $sheet->setCellValue($cell($colUser, $row), $user['name'] ?? '');
+                    $sheet->setCellValue($cell($colTeam, $row), $user['team_name'] ?? '');
+
+                    foreach ($days as $i => $dayMeta) {
+                        $date = $dayMeta['date'];
+                        $col = $firstDayCol + $i;
+                        $val = $daysData[$date]['assignment'] ?? '';
+                        $sheet->setCellValue($cell($col, $row), $val);
+                    }
+
+                    foreach ($summaryCols as $i => $key) {
+                        $col = $firstSummaryCol + $i;
+                        $sheet->setCellValue($cell($col, $row), (int) ($summary[$key] ?? 0));
+                    }
+
+                    // Row style
+                    $sheet->getStyle($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row))
+                        ->getBorders()->getAllBorders()
+                        ->setBorderStyle(Border::BORDER_THIN)
+                        ->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFEEEEEE'));
+
+                    $sheet->getStyle($cell($firstDayCol, $row) . ':' . $cell($lastSummaryCol, $row))
+                        ->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+                    $row++;
                 }
 
-                $line[] = $summary['SCHEDULE_COUNT'] ?? 0;
-                $line[] = $summary['HK'] ?? 0;
-                $line[] = $summary['OT'] ?? 0;
-                $line[] = $summary['OFF'] ?? 0;
-                $line[] = $summary['SAKIT'] ?? 0;
-                $line[] = $summary['IZIN'] ?? 0;
-                $line[] = $summary['CUTI'] ?? 0;
-                $line[] = $summary['ALPA'] ?? 0;
-
-                fputcsv($handle, $line);
+                // Spacer row
+                $row++;
             }
 
-            fclose($handle);
+            $writer = new Xlsx($spreadsheet);
+            $writer->save('php://output');
         }, $fileName, [
-            'Content-Type' => 'text/csv; charset=UTF-8',
+            'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         ]);
     }
 
