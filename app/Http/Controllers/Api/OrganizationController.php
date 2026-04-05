@@ -7,6 +7,7 @@ use App\Models\Organization;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Storage;
 
 class OrganizationController extends Controller
 {
@@ -55,13 +56,30 @@ class OrganizationController extends Controller
                 'name' => 'required|string|max:255',
                 'email' => 'required|string|max:255',
                 'phone' => 'nullable|string|max:20',
-                'logo' => 'nullable|string',
+                'logo' => 'nullable|image|max:5120', // Maks 5MB
                 'code' => 'required|string|max:50|unique:organizations,code',
                 'address' => 'nullable|string',
                 'start_date' => 'nullable|string',
                 'end_date' => 'nullable|string',
-
             ]);
+
+            // --- PROSES UPLOAD LOGO ---
+            if ($request->hasFile('logo')) {
+                // Simpan ke storage/app/public/patrol-scan-photos
+                // Laravel otomatis generate nama unik
+                $path = $request->file('logo')->store('organizations', 'public');
+                
+                // Ganti isi 'logo' di array validated dengan path yang baru
+                $validated['logo'] = $path;
+            }
+
+            $org = Organization::create($validated);
+
+            return response()->json([
+                'message' => 'Organization created successfully',
+                'data' => $org,
+            ], 201);
+
         } catch (ValidationException $e) {
             return response()->json([
                 'success'     => false,
@@ -70,13 +88,6 @@ class OrganizationController extends Controller
                 'errors'      => $e->errors(),
             ], 422);
         }
-
-        $org = Organization::create($validated);
-
-        return response()->json([
-            'message' => 'Organization created successfully',
-            'data' => $org,
-        ], 201);
     }
 
     /**
@@ -91,6 +102,7 @@ class OrganizationController extends Controller
                 'name' => 'sometimes|string|max:255',
                 'email' => 'sometimes|string|max:255',
                 'phone' => 'sometimes|string|max:20',
+                'logo' => 'sometimes|image|max:5120', // Tambahkan validasi logo di sini
                 'code' => [
                     'sometimes',
                     'string',
@@ -100,6 +112,26 @@ class OrganizationController extends Controller
                 'start_date' => 'sometimes|string',
                 'end_date' => 'sometimes|string',
             ]);
+
+            // --- PROSES UPDATE LOGO ---
+            if ($request->hasFile('logo')) {
+                // Hapus logo lama jika ada
+                if ($organization->logo) {
+                    Storage::disk('public')->delete($organization->logo);
+                }
+
+                // Simpan logo baru
+                $path = $request->file('logo')->store('organizations', 'public');
+                $validated['logo'] = $path;
+            }
+
+            $organization->update($validated);
+
+            return response()->json([
+                'message' => 'Organization updated successfully',
+                'data' => $organization,
+            ]);
+
         } catch (ValidationException $e) {
             return response()->json([
                 'success'     => false,
@@ -108,13 +140,6 @@ class OrganizationController extends Controller
                 'errors'      => $e->errors(),
             ], 422);
         }
-
-        $organization->update($validated);
-
-        return response()->json([
-            'message' => 'Organization updated successfully',
-            'data' => $organization,
-        ]);
     }
 
     /**

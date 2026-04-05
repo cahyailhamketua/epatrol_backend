@@ -2,8 +2,8 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 
 class PayrollDetail extends Model
 {
@@ -14,7 +14,15 @@ class PayrollDetail extends Model
         'project_id',
         'user_id',
         'assignment_id',
+        'period',
+        'user_nik',
+        'user_bank_name',
+        'user_bank_account',
+        'user_position',
         'working_days',
+        'schedule_full_existing_count',
+        'schedule_prorate_in_count',
+        'schedule_prorate_out_count',
         'worked_hours',
         'base_salary',
         'attendance_count',
@@ -38,6 +46,12 @@ class PayrollDetail extends Model
         'addition_bonus',
         'addition_other',
         'total_additions',
+        'earnings_breakdown',
+        'deductions_breakdown',
+        'other_breakdown',
+        'manual_breakdown',
+        'daily_breakdown',
+        'calculation_meta',
         'net_salary',
         'payment_method',
         'payment_date',
@@ -59,6 +73,12 @@ class PayrollDetail extends Model
         'total_additions' => 'decimal:2',
         'net_salary' => 'decimal:2',
         'payment_date' => 'date',
+        'earnings_breakdown' => 'array',
+        'deductions_breakdown' => 'array',
+        'other_breakdown' => 'array',
+        'manual_breakdown' => 'array',
+        'daily_breakdown' => 'array',
+        'calculation_meta' => 'array',
     ];
 
     public function payrollRun()
@@ -100,14 +120,14 @@ class PayrollDetail extends Model
     // Accessors & Mutators
     public function getTotalDeductions()
     {
-        return $this->deduction_late + $this->deduction_absence + 
-               $this->deduction_cuti + $this->deduction_alpha + 
+        return $this->deduction_late + $this->deduction_absence +
+               $this->deduction_cuti + $this->deduction_alpha +
                $this->deduction_other;
     }
 
     public function getTotalAdditions()
     {
-        return $this->addition_overtime + $this->addition_allowance + 
+        return $this->addition_overtime + $this->addition_allowance +
                $this->addition_bonus + $this->addition_other;
     }
 
@@ -152,6 +172,7 @@ class PayrollDetail extends Model
         if ($total === 0) {
             return 0;
         }
+
         return round(($this->attendance_count / $total) * 100, 2);
     }
 }

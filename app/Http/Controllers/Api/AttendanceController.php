@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\Absence;
+use App\Models\Activity;
 use App\Models\Assignment;
 use App\Models\Attendance;
 use App\Models\OvertimeLog;
@@ -347,7 +348,7 @@ class AttendanceController extends Controller
 
         // PENTING: Resolve schedule dan shift timezone independent via helper (support midnight shift)
         $deviceDateTime = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, 'Asia/Jakarta');
-        $originalToday = $deviceDateTime->toDateString(); 
+        $originalToday = $deviceDateTime->toDateString();
 
         [$schedule, $today] = $this->resolveActiveScheduleForCheckIn($user, $request->current_time);
 
@@ -835,8 +836,10 @@ class AttendanceController extends Controller
 
         // Asumsi utama: pada satu waktu hanya ada 1 assignment aktif dalam project.
         // Jika ada lebih dari 1, kita ambil assignment pertama dan batasi ke assignment itu.
-        $activeAssignmentId = $activeSchedules->first()->assignment_id;
-        $activeSchedules = $activeSchedules->where('assignment_id', $activeAssignmentId)->values();
+        $activeAssignmentId = $activeSchedules->first()?->assignment_id;
+        if ($activeAssignmentId) {
+            $activeSchedules = $activeSchedules->where('assignment_id', $activeAssignmentId)->values();
+        }
         $activeAssignment = $activeSchedules->first()->assignment;
 
         // Danru tidak boleh melihat progress danru lain.
@@ -865,7 +868,16 @@ class AttendanceController extends Controller
 
         $patrolService = app(PatrolScanService::class);
 
-        $members = $activeSchedules->map(function ($schedule) use ($attendances, $patrolService) {
+        // Top-level ishoma activities per post
+        $postIds = $attendances->pluck('post_id')->filter()->unique()->values();
+        $ishomaActivitiesByPost = Activity::where('active', true)
+            ->where('name', 'like', '%ishoma%')
+            ->whereIn('post_id', $postIds->all())
+            ->with('assignmentTimes.assignment')
+            ->get()
+            ->groupBy('post_id');
+
+        $members = $activeSchedules->map(function ($schedule) use ($attendances, $patrolService, $ishomaActivitiesByPost) {
             $attendance = $attendances->get($schedule->id);
 
             $scanProgress = null;
@@ -898,6 +910,32 @@ class AttendanceController extends Controller
                 ] : null,
                 'checkin_status' => ($attendance && $attendance->check_in_at) ? 'CHECKED_IN' : 'NOT_YET',
                 'scan_progress' => $scanProgress,
+                'timesheet' => $attendance ? [
+                    'check_in_at' => $attendance->check_in_at?->toISOString(),
+                    'check_out_at' => $attendance->check_out_at?->toISOString(),
+                    'computed_status' => $attendance->computed_status,
+                    'work_duration_minutes' => ($attendance->check_in_at && $attendance->check_out_at)
+                        ? $attendance->check_in_at->diffInMinutes($attendance->check_out_at)
+                        : null,
+                ] : null,
+                'ishoma_activities' => $attendance && $attendance->post_id
+                    ? ($ishomaActivitiesByPost[$attendance->post_id] ?? collect())->map(function ($activity) {
+                        return [
+                            'id' => $activity->id,
+                            'name' => $activity->name,
+                            'location' => $activity->location,
+                            'assignment_times' => $activity->assignmentTimes->map(function ($t) {
+                                return [
+                                    'id' => $t->id,
+                                    'assignment_id' => $t->assignment_id,
+                                    'assignment_name' => $t->assignment?->name,
+                                    'start_time' => $t->start_time,
+                                    'end_time' => $t->end_time,
+                                ];
+                            }),
+                        ];
+                    })
+                    : collect(),
             ];
         })->values();
 
@@ -930,6 +968,565 @@ class AttendanceController extends Controller
                 'percentage' => $percentage,
             ],
             'members' => $members,
+        ], 200);
+    }
+
+    /**
+     * ini yang bener
+     * Post progress detail - by attendance (danru/admin_lapang/ho)
+     * GET /api/attendance/{attendance}/progress-post-detail
+     * Ambil assignment_id dari user (anggota) yang checkin di post
+     */
+    // public function progressPostDetailByAttendance(Request $request)
+    // {
+    //     $user = Auth::user();
+
+    //     if ($user->role === 'ho') {
+    //         $postId = $request->input('post_id');
+    //         if (!$postId) {
+    //             return response()->json(['message' => 'post_id wajib untuk HO.'], 422);
+    //         }
+
+    //         $post = Post::findOrFail($postId);
+    //         $project = $post->project;
+    //         $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+    //         $nowInProjectTz = $request->filled('current_time')
+    //             ? Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone)
+    //             : now($projectTimezone);
+
+    //         $today = $nowInProjectTz->toDateString();
+
+    //         // Cari assignment aktif berdasarkan current_time
+    //         $assignments = Assignment::where('post_id', $postId)->get();
+    //         $activeAssignment = null;
+    //         foreach ($assignments as $assignment) {
+    //             $start = Carbon::createFromFormat('Y-m-d H:i:s', $today.' '.$assignment->start_time, $projectTimezone);
+    //             $end = Carbon::createFromFormat('Y-m-d H:i:s', $today.' '.$assignment->end_time, $projectTimezone);
+    //             if ($end->lessThanOrEqualTo($start)) {
+    //                 $end->addDay();
+    //             }
+    //             if ($nowInProjectTz->between($start, $end)) {
+    //                 $activeAssignment = $assignment;
+    //                 break;
+    //             }
+    //         }
+
+    //         if (!$activeAssignment) {
+    //             return response()->json(['message' => 'Tidak ada assignment aktif di post ini pada waktu sekarang.'], 422);
+    //         }
+
+    //         // Cari schedule hari ini untuk assignment aktif
+    //         $schedule = Schedule::where('project_id', $project->id)
+    //             ->where('date', $today)
+    //             ->where('assignment_id', $activeAssignment->id)
+    //             ->with(['assignment', 'user'])
+    //             ->first();
+
+    //         if (!$schedule) {
+    //             return response()->json(['message' => 'Tidak ada schedule aktif untuk assignment ini hari ini.'], 422);
+    //         }
+
+    //         // Cari attendance untuk schedule ini
+    //         $attendance = Attendance::where('schedule_id', $schedule->id)
+    //             ->where('date', $today)
+    //             ->where('post_id', $postId)
+    //             ->whereNotNull('check_in_at')
+    //             ->first();
+
+    //         if (!$attendance) {
+    //             return response()->json(['message' => 'Tidak ada attendance yang check in untuk assignment ini.'], 422);
+    //         }
+    //     } else {
+    //         $attendanceId = $request->input('attendance_id');
+    //         if (!$attendanceId) {
+    //             return response()->json(['message' => 'attendance_id wajib dikirim.'], 422);
+    //         }
+
+    //         $attendance = Attendance::findOrFail($attendanceId);
+    //     }
+
+    //     $this->authorize('view', $attendance);
+
+    //     $post = $attendance->post;
+
+    //     if (! $post) {
+    //         return response()->json([ 'message' => 'Attendance tidak memiliki post.' ], 422);
+    //     }
+
+    //     $project = $attendance->project;
+
+    //     $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+    //     $nowInProjectTz = $request->filled('current_time')
+    //         ? Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone)
+    //         : now($projectTimezone);
+
+    //     $today = $nowInProjectTz->toDateString();
+
+    //     // Ambil semua schedule hari ini di post ini
+    //     $schedulesToday = Schedule::where('project_id', $project->id)
+    //         ->where('date', $today)
+    //         ->where('post_id', $post->id)
+    //         ->with(['assignment', 'user'])
+    //         ->get();
+
+    //     // Filter active schedule
+    //     $activeSchedules = $schedulesToday->filter(function ($schedule) use ($nowInProjectTz, $today, $projectTimezone) {
+    //         if (! $schedule->assignment) {
+    //             return false;
+    //         }
+
+    //         $start = Carbon::createFromFormat('Y-m-d H:i:s', $today.' '.$schedule->assignment->start_time, $projectTimezone);
+    //         $end = Carbon::createFromFormat('Y-m-d H:i:s', $today.' '.$schedule->assignment->end_time, $projectTimezone);
+    //         if ($end->lessThanOrEqualTo($start)) {
+    //             $end->addDay();
+    //         }
+
+    //         $now = $nowInProjectTz->copy();
+    //         if ($end->greaterThan($start) && $now->lessThan($start) && $end->diffInHours($start) > 12) {
+    //             $now->addDay();
+    //         }
+
+    //         return $now->greaterThanOrEqualTo($start) && $now->lessThan($end);
+    //     })->values();
+
+    //     if ($activeSchedules->isEmpty()) {
+    //         $activeSchedules = $schedulesToday;
+    //     }
+
+    //     $activeAssignmentId = $activeSchedules->first()?->assignment_id;
+    //     if ($activeAssignmentId) {
+    //         $activeSchedules = $activeSchedules->where('assignment_id', $activeAssignmentId)->values();
+    //     }
+
+    //     $scheduleIds = $activeSchedules->pluck('id')->all();
+
+    //     // Attendance untuk post hari ini
+    //     $allAttendances = Attendance::whereIn('schedule_id', $scheduleIds)
+    //         ->where('date', $today)
+    //         ->where('post_id', $post->id)
+    //         ->with(['user', 'post', 'schedule.assignment', 'patrolScans.qrCode.patrolPoint'])
+    //         ->get();
+
+    //     $totalMembers = $activeSchedules->count();
+    //     $checkedIn = $allAttendances->whereNotNull('check_in_at')->count();
+    //     $notCheckedIn = max(0, $totalMembers - $checkedIn);
+
+    //     // Patrol points
+    //     $postPoints = $post->patrolPoints()->orderBy('sequence_order')->get();
+    //     $attendanceIds = $allAttendances->pluck('id')->all();
+
+    //     $allScans = PatrolScan::with(['qrCode.patrolPoint', 'attendance.user', 'photos'])
+    //         ->whereIn('attendance_id', $attendanceIds)
+    //         ->get();
+
+    //     $patrolPoints = $postPoints->map(function ($point) use ($allScans) {
+    //         $pointScans = $allScans->filter(function ($scan) use ($point) {
+    //             return $scan->qrCode?->patrolPoint?->id === $point->id;
+    //         })->sortBy('scan_time');
+
+    //         return [
+    //             'id' => $point->id,
+    //             'name' => $point->name,
+    //             'sequence_order' => $point->sequence_order,
+    //             'latitude' => $point->latitude,
+    //             'longitude' => $point->longitude,
+    //             'is_scanned' => $pointScans->isNotEmpty(),
+    //             'scanned_count' => $pointScans->count(),
+    //             'last_scan_time' => $pointScans->last()?->scan_time,
+    //             'last_scan_note' => $pointScans->last()?->note,
+    //             'last_scan_user' => $pointScans->last()?->attendance?->user?->full_name,
+    //         ];
+    //     });
+
+    //     $scanDetails = $allScans->map(function ($scan) {
+    //         return [
+    //             'id' => $scan->id,
+    //             'attendance_id' => $scan->attendance_id,
+    //             'patrol_point_id' => $scan->qrCode->patrolPoint->id,
+    //             'patrol_point_name' => $scan->qrCode->patrolPoint->name,
+    //             'scan_time' => $scan->scan_time,
+    //             'note' => $scan->note,
+    //             'photos' => $scan->photos->map(function ($photo) {
+    //                 return [
+    //                     'id' => $photo->id,
+    //                     'url' => Storage::disk('public')->url($photo->photo),
+    //                 ];
+    //             }),
+    //             'scan_user' => [
+    //                 'id' => $scan->attendance->user_id,
+    //                 'full_name' => $scan->attendance->user?->full_name,
+    //             ],
+    //         ];
+    //     });
+
+    //     // Activity list - FILTER by user attendance's assignment_id
+    //     $userAssignmentId = $attendance->assignment_id;
+
+    //     $activityQuery = Activity::where('active', true)
+    //         ->where('post_id', $post->id);
+
+    //     if ($userAssignmentId) {
+    //         $activityQuery->whereHas('assignmentTimes', function ($q) use ($userAssignmentId) {
+    //             $q->where('assignment_id', $userAssignmentId);
+    //         });
+    //     }
+
+    //     $activityList = $activityQuery
+    //         ->with('assignmentTimes.assignment')
+    //         ->orderBy('name')
+    //         ->get()
+    //         ->map(function ($activity) use ($userAssignmentId) {
+    //             // Filter assignment_times by user's assignment_id
+    //             $filteredTimes = $userAssignmentId
+    //                 ? $activity->assignmentTimes->where('assignment_id', $userAssignmentId)
+    //                 : $activity->assignmentTimes;
+
+    //             return [
+    //                 'id' => $activity->id,
+    //                 'name' => $activity->name,
+    //                 'location' => $activity->location,
+    //                 'assignment_times' => $filteredTimes->map(function ($t) {
+    //                     return [
+    //                         'id' => $t->id,
+    //                         'assignment_id' => $t->assignment_id,
+    //                         'assignment_name' => $t->assignment?->name,
+    //                         'start_time' => $t->start_time,
+    //                         'end_time' => $t->end_time,
+    //                     ];
+    //                 })->values(),
+    //             ];
+    //         })
+    //         ->filter(fn ($act) => $act['assignment_times']->isNotEmpty())
+    //         ->values();
+
+    //     // Timesheet user
+    //     $startMonth = Carbon::now($projectTimezone)->startOfMonth();
+    //     $endMonth = Carbon::now($projectTimezone)->endOfMonth();
+
+    //     $userTimesheet = Attendance::where('user_id', $attendance->user_id)
+    //         ->whereBetween('date', [$startMonth->toDateString(), $endMonth->toDateString()])
+    //         ->with(['assignment', 'overtimeLog.workAssignment'])
+    //         ->get()
+    //         ->map(function ($att) {
+    //             return [
+    //                 'date' => $att->date->format('Y-m-d'),
+    //                 'check_in_at' => $att->check_in_at?->setTimezone('Asia/Jakarta')->format('H:i') ?? null,
+    //                 'check_out_at' => $att->check_out_at?->setTimezone('Asia/Jakarta')->format('H:i') ?? null,
+    //                 'status' => $att->computed_status,
+    //                 'assignment_code' => $att->assignment?->code,
+    //             ];
+    //         });
+
+    //     $postProgress = [
+    //         'post_id' => $post->id,
+    //         'post_name' => $post->name,
+    //         'project_id' => $post->project_id,
+    //         'assignment_id' => $userAssignmentId,
+    //         'total_members' => $totalMembers,
+    //         'checked_in_members' => $checkedIn,
+    //         'not_checked_in_members' => $notCheckedIn,
+    //         'total_patrol_points' => $postPoints->count(),
+    //         'scanned_patrol_points' => $patrolPoints->where('is_scanned', true)->count(),
+    //         'remaining_patrol_points' => $patrolPoints->where('is_scanned', false)->count(),
+    //         'progress_percentage' => $postPoints->count() > 0 ? round($patrolPoints->where('is_scanned', true)->count() / $postPoints->count() * 100, 2) : 0,
+    //     ];
+
+    //     return response()->json([
+    //         'success' => true,
+    //         'data' => [
+    //             'user' => [
+    //                 'id' => $attendance->user_id,
+    //                 'name' => $attendance->user?->full_name,
+    //                 'check_in_at' => $attendance->check_in_at,
+    //                 'check_out_at' => $attendance->check_out_at,
+    //                 'computed_status' => $attendance->computed_status,
+    //             ],
+    //             'post_progress' => $postProgress,
+    //             'patrol_points' => $patrolPoints,
+    //             'scan_details' => $scanDetails,
+    //             'activity_list' => $activityList,
+    //             'user_timesheet' => $userTimesheet,
+    //         ],
+    //     ], 200);
+    // }
+
+    /**
+     * Per-post progress detail endpoint for danru/admin_project/ho (attendance controller)
+     * GET /api/posts/{post}/attendance/progress-detail
+     */
+    public function progressPostDetail(Request $request, Post $post)
+    {
+        $this->authorize('progress', Attendance::class);
+
+        $user = Auth::user();
+
+        // Project scope for HO atau user join
+        if ($user->role === 'ho') {
+            $projectId = (int) $request->query('project_id', 0);
+            if ($projectId <= 0) {
+                return response()->json(['message' => 'project_id wajib dikirim untuk HO.'], 422);
+            }
+        } else {
+            $projectId = (int) ($user->project_id ?? 0);
+            if ($projectId <= 0) {
+                return response()->json(['message' => 'User tidak memiliki project.'], 422);
+            }
+        }
+
+        if ((int) $post->project_id !== $projectId && $user->role !== 'dev') {
+            return response()->json(['message' => 'Post tidak berada dalam project Anda.'], 403);
+        }
+
+        $project = Project::with('organization')->find($projectId);
+        if (! $project) {
+            return response()->json(['message' => 'Project tidak ditemukan.'], 404);
+        }
+
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+        $nowInProjectTz = $request->filled('current_time')
+            ? Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone)
+            : now($projectTimezone);
+
+        $today = $nowInProjectTz->toDateString();
+        $yesterday = $nowInProjectTz->copy()->subDay()->toDateString();
+
+        // Ambil schedule dari hari ini dan kemarin (untuk support lintas malam)
+        $schedulesToday = Schedule::where('project_id', $projectId)
+            ->whereIn('date', [$today, $yesterday])
+            ->with(['assignment', 'user'])
+            ->get();
+
+        // Filter schedule berdasarkan assignment yang sedang aktif saat ini
+        $activeSchedules = $schedulesToday->filter(function ($schedule) use ($nowInProjectTz, $projectTimezone) {
+            if (! $schedule->assignment) {
+                return false;
+            }
+
+            // Gunakan date schedule yang sebenarnya (bisa jadi yesterday)
+            $schDate = $schedule->date instanceof \Carbon\Carbon ? $schedule->date->format('Y-m-d') : \Carbon\Carbon::parse($schedule->date)->format('Y-m-d');
+            $start = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$schedule->assignment->start_time, $projectTimezone);
+            $end = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$schedule->assignment->end_time, $projectTimezone);
+
+            // Handle midnight shift: end <= start berarti melewati tengah malam
+            if ($end->lessThanOrEqualTo($start)) {
+                $end->addDay();
+            }
+
+            return $nowInProjectTz->greaterThanOrEqualTo($start) && $nowInProjectTz->lessThan($end);
+        })->values();
+
+        if ($activeSchedules->isEmpty()) {
+            // Tidak ada assignment aktif saat ini, fallback ke semua jadwal hari ini.
+            $activeSchedules = $schedulesToday;
+        }
+
+        $activeAssignmentId = $activeSchedules->first()->assignment_id ?? null;
+        $activeSchedules = $activeSchedules->where('assignment_id', $activeAssignmentId)->values();
+
+        if ($user->role === 'komandan_regu') {
+            $activeSchedules = $activeSchedules->filter(function ($schedule) use ($user) {
+                if (! $schedule->user) {
+                    return false;
+                }
+                if ($schedule->user->role === 'komandan_regu') {
+                    return (int) $schedule->user_id === (int) $user->id;
+                }
+
+                return true;
+            })->values();
+        }
+
+        $scheduleIds = $activeSchedules->pluck('id')->all();
+
+        // Get schedule dates untuk attendance query (support lintas malam)
+        $scheduleDates = $activeSchedules->pluck('date')->unique()->map(function ($date) {
+            return $date instanceof \Carbon\Carbon ? $date->toDateString() : \Carbon\Carbon::parse($date)->toDateString();
+        })->toArray();
+
+        // Data attendance untuk post ini (active schedules)
+        $attendances = Attendance::whereIn('schedule_id', $scheduleIds)
+            ->whereIn('date', $scheduleDates)
+            ->where('post_id', $post->id)
+            ->with(['user', 'post', 'schedule.assignment', 'project.organization', 'patrolScans.qrCode.patrolPoint'])
+            ->get();
+
+        $totalMembers = $activeSchedules->count();
+        $checkedIn = $attendances->whereNotNull('check_in_at')->count();
+        $notCheckedIn = max(0, $totalMembers - $checkedIn);
+
+        // Patrol points progress
+        $postPoints = $post->patrolPoints()->orderBy('sequence_order')->get();
+        $attendanceIds = $attendances->pluck('id')->all();
+
+        $allScans = PatrolScan::with(['qrCode.patrolPoint', 'attendance.user', 'photos'])
+            ->whereIn('attendance_id', $attendanceIds)
+            ->get();
+
+        $pointById = $postPoints->keyBy('id');
+
+        $patrolPoints = $postPoints->map(function ($point) use ($allScans) {
+            $pointScans = $allScans->filter(function ($scan) use ($point) {
+                return $scan->qrCode?->patrolPoint?->id === $point->id;
+            })->sortBy('scan_time');
+
+            return [
+                'id' => $point->id,
+                'name' => $point->name,
+                'sequence_order' => $point->sequence_order,
+                'latitude' => $point->latitude,
+                'longitude' => $point->longitude,
+                'is_scanned' => $pointScans->isNotEmpty(),
+                'scanned_count' => $pointScans->count(),
+                'last_scan_time' => $pointScans->last()?->scan_time,
+                'last_scan_note' => $pointScans->last()?->note,
+                'last_scan_user' => $pointScans->last()?->attendance?->user?->full_name,
+            ];
+        });
+
+        $scanDetails = $allScans->map(function ($scan) {
+            return [
+                'id' => $scan->id,
+                'attendance_id' => $scan->attendance_id,
+                'patrol_point_id' => $scan->qrCode->patrolPoint->id,
+                'patrol_point_name' => $scan->qrCode->patrolPoint->name,
+                'scan_time' => $scan->scan_time,
+                'note' => $scan->note,
+                'photos' => $scan->photos->map(function ($photo) {
+                    return [
+                        'id' => $photo->id,
+                        'url' => Storage::disk('public')->url($photo->photo),
+                    ];
+                }),
+                'scan_user' => [
+                    'id' => $scan->attendance->user_id,
+                    'full_name' => $scan->attendance->user?->full_name,
+                ],
+            ];
+        });
+
+        $activityAssignmentId = $request->query('assignment_id');
+
+        // preference: assignment_id request > user active post attendance > active schedule assignment
+        if (! $activityAssignmentId) {
+            $userPostAttendance = Attendance::where('user_id', $user->id)
+                ->where('post_id', $post->id)
+                ->whereIn('date', $scheduleDates)
+                ->whereNotNull('check_in_at')
+                ->whereNull('check_out_at')
+                ->orderByDesc('check_in_at')
+                ->first();
+
+            $activityAssignmentId = $userPostAttendance?->assignment_id;
+        }
+
+        if (! $activityAssignmentId) {
+            $activityAssignmentId = $activeAssignmentId;
+        }
+
+        if (! $activityAssignmentId) {
+            $userActiveAttendance = Attendance::where('user_id', $user->id)
+                ->whereNotNull('check_in_at')
+                ->whereNull('check_out_at')
+                ->orderByDesc('check_in_at')
+                ->first();
+            $activityAssignmentId = $userActiveAttendance?->assignment_id;
+        }
+
+        if (! $activityAssignmentId) {
+            // Fallback to assignment_id from any checked-in user in this post
+            $activityAssignmentId = $attendances->first()?->assignment_id;
+        }
+
+        $activityQuery = Activity::where('active', true)
+            ->where('post_id', $post->id);
+
+        if ($activityAssignmentId) {
+            $activityQuery->whereHas('assignmentTimes', function ($q) use ($activityAssignmentId) {
+                $q->where('assignment_id', $activityAssignmentId);
+            });
+        }
+
+        $activityList = $activityQuery
+            ->with('assignmentTimes.assignment')
+            ->orderBy('name')
+            ->get()
+            ->map(function ($activity) use ($activityAssignmentId) {
+                $filteredTimes = $activity->assignmentTimes->where('assignment_id', $activityAssignmentId);
+
+                return [
+                    'id' => $activity->id,
+                    'name' => $activity->name,
+                    'location' => $activity->location,
+                    'assignment_times' => $filteredTimes->map(function ($t) {
+                        return [
+                            'id' => $t->id,
+                            'assignment_id' => $t->assignment_id,
+                            'assignment_name' => $t->assignment?->name,
+                            'start_time' => $t->start_time,
+                            'end_time' => $t->end_time,
+                        ];
+                    })->values(),
+                ];
+            })
+            ->filter(fn ($act) => $act['assignment_times']->isNotEmpty())
+            ->values();
+
+        // Timesheet user for checked-in attendance users in this post
+        $userIds = $attendances->pluck('user_id')->unique()->values();
+        $startMonth = Carbon::now($projectTimezone)->startOfMonth();
+        $endMonth = Carbon::now($projectTimezone)->endOfMonth();
+
+        $userTimesheets = Attendance::whereIn('user_id', $userIds)
+            ->whereBetween('date', [$startMonth->toDateString(), $endMonth->toDateString()])
+            ->with(['user', 'assignment', 'overtimeLog.workAssignment'])
+            ->orderBy('user_id')
+            ->orderBy('date')
+            ->get()
+            ->map(function ($attendance) {
+                return [
+                    'user_id' => $attendance->user_id,
+                    'user_name' => $attendance->user?->full_name,
+                    'date' => $attendance->date->format('Y-m-d'),
+                    'check_in_at' => $attendance->check_in_at?->setTimezone('Asia/Jakarta')->format('H:i') ?? null,
+                    'check_out_at' => $attendance->check_out_at?->setTimezone('Asia/Jakarta')->format('H:i') ?? null,
+                    'status' => $attendance->computed_status,
+                    'assignment_code' => $attendance->assignment?->code,
+                ];
+            });
+
+        $postProgress = [
+            'post_id' => $post->id,
+            'post_name' => $post->name,
+            'project_id' => $post->project_id,
+            'assignment_id' => $activeAssignmentId,
+            'total_members' => $totalMembers,
+            'checked_in_members' => $checkedIn,
+            'not_checked_in_members' => $notCheckedIn,
+            'total_patrol_points' => $postPoints->count(),
+            'scanned_patrol_points' => $patrolPoints->where('is_scanned', true)->count(),
+            'remaining_patrol_points' => $patrolPoints->where('is_scanned', false)->count(),
+            'progress_percentage' => $postPoints->count() > 0 ? round($patrolPoints->where('is_scanned', true)->count() / $postPoints->count() * 100, 2) : 0,
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'post_progress' => $postProgress,
+                'patrol_points' => $patrolPoints,
+                'scan_details' => $scanDetails,
+                'activity_list' => $activityList,
+                'user_timesheets' => $userTimesheets,
+                'members' => $attendances->map(function ($attendance) {
+                    return [
+                        'attendance_id' => $attendance->id,
+                        'user_id' => $attendance->user_id,
+                        'name' => $attendance->user?->full_name,
+                        'check_in_at' => $attendance->check_in_at,
+                        'check_out_at' => $attendance->check_out_at,
+                        'computed_status' => $attendance->computed_status,
+                    ];
+                }),
+            ],
         ], 200);
     }
 
@@ -1014,7 +1611,7 @@ class AttendanceController extends Controller
         $today = $nowInProjectTz->toDateString();
 
         $yesterday = $nowInProjectTz->copy()->subDay()->toDateString();
-        
+
         // Ambil schedule project untuk hari ini dan kemarin (mendukung lintas malam)
         $schedulesToday = Schedule::where('project_id', $projectId)
             ->whereIn('date', [$today, $yesterday])
@@ -1505,6 +2102,517 @@ class AttendanceController extends Controller
     }
 
     /**
+     * TIMESHEET
+     * GET /attendances/timesheet
+     * Menampilkan riwayat schedule dan attendance selama 1 bulan
+     */
+    public function timesheet(Request $request)
+    {
+        $user = Auth::user();
+
+        // Validasi parameter month (contoh: 2026-03)
+        $request->validate([
+            'month' => 'nullable|date_format:Y-m',
+        ]);
+
+        $project = $user->project()->with('organization')->first();
+        $timezone = $project?->timezone ?? $project?->organization?->timezone ?? 'Asia/Jakarta';
+
+        // Jika tidak ada parameter month, gunakan bulan sekarang dari request->current_time atau now
+        if ($request->filled('month')) {
+            $startDate = Carbon::createFromFormat('Y-m', $request->month, $timezone)->startOfMonth();
+            $endDate = $startDate->copy()->endOfMonth();
+        } else {
+            // Gunakan current_time jika dikirim, atau now
+            $nowInProjectTz = $request->filled('current_time')
+                ? Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $timezone)
+                : now($timezone);
+            $startDate = $nowInProjectTz->copy()->startOfMonth();
+            $endDate = $nowInProjectTz->copy()->endOfMonth();
+        }
+
+        $nowForStatus = now($timezone);
+        $todayStr = $nowForStatus->toDateString();
+
+        // 1. Get Schedules in month
+        $schedules = Schedule::where('user_id', $user->id)
+            ->whereBetween('date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->with('assignment')
+            ->get()
+            ->keyBy(fn ($s) => $s->date instanceof \Carbon\Carbon ? $s->date->format('Y-m-d') : \Carbon\Carbon::parse($s->date)->format('Y-m-d'));
+
+        // 2. Get Attendances in month
+        $attendances = Attendance::where('user_id', $user->id)
+            ->whereBetween('date', [$startDate->toDateString(), $endDate->toDateString()])
+            ->with(['assignment', 'overtimeLog.workAssignment'])
+            ->get()
+            ->keyBy(fn ($a) => $a->date instanceof \Carbon\Carbon ? $a->date->format('Y-m-d') : \Carbon\Carbon::parse($a->date)->format('Y-m-d'));
+
+        $history = [];
+        $totalDaysMonth = $startDate->daysInMonth;
+
+        $summary = [
+            'total_hari' => $totalDaysMonth,
+            'schedule_kerja' => 0,
+            'kode_kehadiran' => 0,
+            'tidak_absen' => 0,
+        ];
+
+        for ($day = 1; $day <= $totalDaysMonth; $day++) {
+            $currentDate = $startDate->copy()->day($day);
+            $dateStr = $currentDate->toDateString();
+
+            $schedule = $schedules->get($dateStr);
+            $attendance = $attendances->get($dateStr);
+
+            $scheduleCode = $schedule?->assignment?->code;
+            $isOffSchedule = $schedule ? $schedule->assignment->isOffDuty() : true;
+
+            $attendanceCodeStr = null;
+            $checkIn = '--:--';
+            $checkOut = '--:--';
+            $statusStr = '';
+
+            if ($schedule && ! $isOffSchedule) {
+                $summary['schedule_kerja']++;
+            }
+
+            if ($attendance) {
+                $summary['kode_kehadiran']++;
+
+                // Cek apakah ada lembur di hari libur
+                if ($isOffSchedule) {
+                    $workCode = $attendance->overtimeLog?->workAssignment?->code ?? $attendance->assignment?->code;
+                    $attendanceCodeStr = $scheduleCode.' / '.$workCode;
+                } else {
+                    $attendanceCodeStr = $attendance->assignment?->code ?? $scheduleCode;
+                }
+
+                $checkIn = $attendance->check_in_at ? $attendance->check_in_at->setTimezone($timezone)->format('H:i') : '--:--';
+                $checkOut = $attendance->check_out_at ? $attendance->check_out_at->setTimezone($timezone)->format('H:i') : '--:--';
+
+                if (in_array($attendance->computed_status, ['HADIR TELAT', 'HADIR TELAT LEMBUR'])) {
+                    $statusStr = 'Telat';
+                } else {
+                    $statusStr = 'Tepat Waktu';
+                }
+
+            } else {
+                // Tidak ada attendance
+                if ($currentDate->greaterThanOrEqualTo($nowForStatus->copy()->startOfDay())) {
+                    // Hari ini atau masa depan
+                    $statusStr = 'Belum Absen';
+                } else {
+                    // Masa lalu
+                    if ($schedule && ! $isOffSchedule) {
+                        $statusStr = 'Tidak Absen';
+                        $summary['tidak_absen']++;
+                    } else {
+                        // Tidak ada jadwal / jadwal O
+                        $statusStr = 'Libur';
+                    }
+                }
+            }
+
+            // Fallback attendance code
+            if (! $attendanceCodeStr) {
+                if ($statusStr === 'Belum Absen' || $statusStr === 'Tidak Absen' || $statusStr === 'Libur') {
+                    $attendanceCodeStr = $scheduleCode ?? '-';
+                }
+            }
+
+            $history[] = [
+                'date' => $currentDate->format('d'),
+                'day_name' => $currentDate->translatedFormat('l'),
+                'full_date' => $dateStr,
+                'schedule_code' => $scheduleCode ?? '-',
+                'attendance_code' => $attendanceCodeStr ?? '-',
+                'check_in' => $checkIn,
+                'check_out' => $checkOut,
+                'status' => $statusStr,
+            ];
+        }
+
+        return response()->json([
+            'summary' => $summary,
+            'history' => $history,
+        ]);
+    }
+
+    /**
+     * POST MEMBERS TIMESHEET
+     * GET /posts/{post}/members-timesheet
+     *
+     * Realtime untuk satu hari (tanpa agregasi bulanan):
+     * - Wajib `current_time` (Y-m-d H:i:s) di query string — sumber tanggal & jam di timezone project.
+     * - Hanya menampilkan user yang masih punya baris Attendance pada post ini untuk slot hari tersebut.
+     *   Jadi jika check-in dihapus, user hilang dari daftar (tidak “nyangkut” seperti list distinct sebulan).
+     * - Lintas malam: ikut sertakan attendance tanggal kemarin yang belum check-out (shift masih jalan).
+     */
+    // public function postMembersTimesheet(Request $request, Post $post)
+    // {
+    //     $this->authorize('progress', Attendance::class);
+
+    //     $validator = Validator::make($request->query(), [
+    //         'current_time' => 'required|date_format:Y-m-d H:i:s',
+    //         'project_id' => 'sometimes|integer',
+    //     ]);
+    //     if ($validator->fails()) {
+    //         return response()->json($validator->errors(), 422);
+    //     }
+
+    //     $user = Auth::user();
+
+    //     // Project scope
+    //     if ($user->role === 'ho') {
+    //         $projectId = (int) $request->query('project_id', 0);
+    //         if ($projectId <= 0) {
+    //             return response()->json(['message' => 'project_id wajib dikirim untuk HO.'], 422);
+    //         }
+    //     } else {
+    //         $projectId = (int) ($user->project_id ?? 0);
+    //         if ($projectId <= 0) {
+    //             return response()->json(['message' => 'User tidak memiliki project.'], 422);
+    //         }
+    //     }
+
+    //     if ((int) $post->project_id !== $projectId && $user->role !== 'dev') {
+    //         return response()->json(['message' => 'Post tidak berada dalam project Anda.'], 403);
+    //     }
+
+    //     $project = Project::with('organization')->find($projectId);
+    //     if (! $project) {
+    //         return response()->json(['message' => 'Project tidak ditemukan.'], 404);
+    //     }
+
+    //     $timezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+    //     $nowInProjectTz = Carbon::createFromFormat('Y-m-d H:i:s', $request->query('current_time'), $timezone);
+    //     $primaryDate = $nowInProjectTz->toDateString();
+    //     $prevDate = $nowInProjectTz->copy()->subDay()->toDateString();
+
+    //     // Attendance pada post untuk “hari kalender” ini ATAU shift kemarin yang masih terbuka (lintas malam)
+    //     $attendanceRows = Attendance::where('post_id', $post->id)
+    //         ->whereNotNull('check_in_at')
+    //         ->where(function ($q) use ($primaryDate, $prevDate) {
+    //             $q->where('date', $primaryDate)
+    //                 ->orWhere(function ($q2) use ($prevDate) {
+    //                     $q2->where('date', $prevDate)->whereNull('check_out_at');
+    //                 });
+    //         })
+    //         ->with(['user', 'assignment', 'overtimeLog.workAssignment'])
+    //         ->get();
+
+    //     if ($attendanceRows->isEmpty()) {
+    //         return response()->json([
+    //             'success' => true,
+    //             'meta' => [
+    //                 'current_time' => $request->query('current_time'),
+    //                 'timezone' => $timezone,
+    //                 'calendar_date' => $primaryDate,
+    //                 'overnight_includes_date' => $prevDate,
+    //             ],
+    //             'data' => [],
+    //         ]);
+    //     }
+
+    //     $dateKey = static function ($attendance) {
+    //         return $attendance->date instanceof \Carbon\Carbon
+    //             ? $attendance->date->format('Y-m-d')
+    //             : \Carbon\Carbon::parse($attendance->date)->format('Y-m-d');
+    //     };
+
+    //     $byUser = $attendanceRows->groupBy('user_id');
+    //     $result = [];
+
+    //     foreach ($byUser as $userId => $group) {
+    //         // Prioritas: shift kemarin masih buka di post ini; kalau tidak, baris tanggal kalender utama
+    //         $overnight = $group
+    //             ->filter(fn ($a) => $dateKey($a) === $prevDate && $a->check_out_at === null)
+    //             ->sortByDesc('check_in_at')
+    //             ->first();
+
+    //         $todayRow = $group
+    //             ->filter(fn ($a) => $dateKey($a) === $primaryDate)
+    //             ->sortByDesc('check_in_at')
+    //             ->first();
+
+    //         $attendance = $overnight ?? $todayRow ?? $group->sortByDesc('check_in_at')->first();
+
+    //         $attendanceDateStr = $dateKey($attendance);
+    //         $currentDate = Carbon::parse($attendanceDateStr, $timezone)->startOfDay();
+
+    //         $schedule = Schedule::where('user_id', $userId)
+    //             ->where('date', $attendanceDateStr)
+    //             ->with('assignment')
+    //             ->first();
+
+    //         $scheduleCode = $schedule?->assignment?->code;
+    //         $isOffSchedule = $schedule ? $schedule->assignment->isOffDuty() : true;
+
+    //         if ($attendance) {
+    //             if ($isOffSchedule) {
+    //                 $workCode = $attendance->overtimeLog?->workAssignment?->code ?? $attendance->assignment?->code;
+    //                 $attendanceCodeStr = $scheduleCode.' / '.$workCode;
+    //             } else {
+    //                 $attendanceCodeStr = $attendance->assignment?->code ?? $scheduleCode;
+    //             }
+
+    //             $checkIn = $attendance->check_in_at ? $attendance->check_in_at->setTimezone($timezone)->format('H:i') : '--:--';
+    //             $checkOut = $attendance->check_out_at ? $attendance->check_out_at->setTimezone($timezone)->format('H:i') : '--:--';
+
+    //             if (in_array($attendance->computed_status, ['HADIR TELAT', 'HADIR TELAT LEMBUR'])) {
+    //                 $statusStr = 'Telat';
+    //             } else {
+    //                 $statusStr = 'Tepat Waktu';
+    //             }
+    //         } else {
+    //             $attendanceCodeStr = $scheduleCode ?? '-';
+    //             $checkIn = '--:--';
+    //             $checkOut = '--:--';
+    //             $statusStr = 'Belum Absen';
+    //         }
+
+    //         $history = [[
+    //             'date' => $currentDate->format('d'),
+    //             'day_name' => $currentDate->translatedFormat('l'),
+    //             'full_date' => $attendanceDateStr,
+    //             'schedule_code' => $scheduleCode ?? '-',
+    //             'attendance_code' => $attendanceCodeStr ?? '-',
+    //             'check_in' => $checkIn,
+    //             'check_out' => $checkOut,
+    //             'status' => $statusStr,
+    //             'attendance_id' => (int) $attendance->id,
+    //         ]];
+
+    //         $summary = [
+    //             'total_hari' => 1,
+    //             'schedule_kerja' => ($schedule && ! $isOffSchedule) ? 1 : 0,
+    //             'kode_kehadiran' => 1,
+    //             'tidak_absen' => 0,
+    //         ];
+
+    //         $result[] = [
+    //             'user_id' => (int) $userId,
+    //             'user_name' => $attendance->user?->full_name ?? 'Unknown',
+    //             'summary' => $summary,
+    //             'history' => $history,
+    //         ];
+    //     }
+
+    //     usort($result, fn ($a, $b) => strcmp($a['user_name'], $b['user_name']));
+
+    //     return response()->json([
+    //         'success' => true,
+    //         'meta' => [
+    //             'current_time' => $request->query('current_time'),
+    //             'timezone' => $timezone,
+    //             'calendar_date' => $primaryDate,
+    //             'overnight_includes_date' => $prevDate,
+    //         ],
+    //         'data' => $result,
+    //     ]);
+    // }
+
+    public function postMembersTimesheet(Request $request, Post $post)
+{
+    $this->authorize('progress', Attendance::class);
+
+    $validator = Validator::make($request->query(), [
+        'current_time' => 'required|date_format:Y-m-d H:i:s',
+        'project_id' => 'sometimes|integer',
+    ]);
+
+    if ($validator->fails()) {
+        return response()->json($validator->errors(), 422);
+    }
+
+    $user = Auth::user();
+
+    // ================= PROJECT SCOPE =================
+    if ($user->role === 'ho') {
+        $projectId = (int) $request->query('project_id', 0);
+        if ($projectId <= 0) {
+            return response()->json(['message' => 'project_id wajib dikirim untuk HO.'], 422);
+        }
+    } else {
+        $projectId = (int) ($user->project_id ?? 0);
+        if ($projectId <= 0) {
+            return response()->json(['message' => 'User tidak memiliki project.'], 422);
+        }
+    }
+
+    if ((int) $post->project_id !== $projectId && $user->role !== 'dev') {
+        return response()->json(['message' => 'Post tidak berada dalam project Anda.'], 403);
+    }
+
+    $project = Project::with('organization')->find($projectId);
+    if (! $project) {
+        return response()->json(['message' => 'Project tidak ditemukan.'], 404);
+    }
+
+    // ================= TIMEZONE =================
+    $timezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+
+    $nowInProjectTz = Carbon::createFromFormat(
+        'Y-m-d H:i:s',
+        $request->query('current_time'),
+        $timezone
+    );
+
+    $startDate = $nowInProjectTz->copy()->startOfMonth();
+    $endDate   = $nowInProjectTz->copy()->endOfMonth();
+
+    // ================= GET ATTENDANCE =================
+    $attendanceRows = Attendance::where('post_id', $post->id)
+        ->whereBetween('date', [$startDate->toDateString(), $endDate->toDateString()])
+        ->with(['user', 'assignment', 'overtimeLog.workAssignment'])
+        ->get();
+
+    // ================= GET USER IDS =================
+    $userIds = $attendanceRows->pluck('user_id')->unique();
+
+    if ($userIds->isEmpty()) {
+        return response()->json([
+            'success' => true,
+            'meta' => [
+                'current_time' => $request->query('current_time'),
+                'timezone' => $timezone,
+                'month' => $startDate->format('Y-m'),
+            ],
+            'data' => [],
+        ]);
+    }
+
+    // ================= GET SCHEDULE =================
+    $schedules = Schedule::whereIn('user_id', $userIds)
+        ->whereBetween('date', [$startDate->toDateString(), $endDate->toDateString()])
+        ->with('assignment')
+        ->get()
+        ->groupBy('user_id');
+
+    // ================= GROUP BY USER =================
+    $byUser = $attendanceRows->groupBy('user_id');
+
+    $result = [];
+
+    foreach ($byUser as $userId => $attendances) {
+
+        $attendanceByDate = $attendances->keyBy(fn ($a) =>
+            \Carbon\Carbon::parse($a->date)->format('Y-m-d')
+        );
+
+        $userSchedules = $schedules->get($userId)?->keyBy(fn ($s) =>
+            \Carbon\Carbon::parse($s->date)->format('Y-m-d')
+        ) ?? collect();
+
+        $history = [];
+
+        $summary = [
+            'total_hari' => $startDate->daysInMonth,
+            'schedule_kerja' => 0,
+            'kode_kehadiran' => 0,
+            'tidak_absen' => 0,
+        ];
+
+        for ($day = 1; $day <= $startDate->daysInMonth; $day++) {
+
+            $currentDate = $startDate->copy()->day($day);
+            $dateStr = $currentDate->toDateString();
+
+            $attendance = $attendanceByDate->get($dateStr);
+            $schedule = $userSchedules->get($dateStr);
+
+            $scheduleCode = $schedule?->assignment?->code;
+            $isOffSchedule = $schedule ? $schedule->assignment->isOffDuty() : true;
+
+            $checkIn = '--:--';
+            $checkOut = '--:--';
+            $statusStr = '';
+            $attendanceCodeStr = null;
+
+            // ================= SUMMARY SCHEDULE =================
+            if ($schedule && ! $isOffSchedule) {
+                $summary['schedule_kerja']++;
+            }
+
+            // ================= ADA ATTENDANCE =================
+            if ($attendance) {
+                $summary['kode_kehadiran']++;
+
+                if ($isOffSchedule) {
+                    $workCode = $attendance->overtimeLog?->workAssignment?->code
+                        ?? $attendance->assignment?->code;
+                    $attendanceCodeStr = $scheduleCode.' / '.$workCode;
+                } else {
+                    $attendanceCodeStr = $attendance->assignment?->code ?? $scheduleCode;
+                }
+
+                $checkIn = $attendance->check_in_at
+                    ? $attendance->check_in_at->setTimezone($timezone)->format('H:i')
+                    : '--:--';
+
+                $checkOut = $attendance->check_out_at
+                    ? $attendance->check_out_at->setTimezone($timezone)->format('H:i')
+                    : '--:--';
+
+                $statusStr = in_array($attendance->computed_status, [
+                    'HADIR TELAT',
+                    'HADIR TELAT LEMBUR'
+                ]) ? 'Telat' : 'Tepat Waktu';
+
+            } else {
+                // ================= TIDAK ADA ATTENDANCE =================
+                if ($currentDate->greaterThanOrEqualTo($nowInProjectTz->copy()->startOfDay())) {
+                    $statusStr = 'Belum Absen';
+                } else {
+                    if ($schedule && ! $isOffSchedule) {
+                        $statusStr = 'Tidak Absen';
+                        $summary['tidak_absen']++;
+                    } else {
+                        $statusStr = 'Libur';
+                    }
+                }
+            }
+
+            if (! $attendanceCodeStr) {
+                $attendanceCodeStr = $scheduleCode ?? '-';
+            }
+
+            $history[] = [
+                'date' => $currentDate->format('d'),
+                'day_name' => $currentDate->translatedFormat('l'),
+                'full_date' => $dateStr,
+                'schedule_code' => $scheduleCode ?? '-',
+                'attendance_code' => $attendanceCodeStr,
+                'check_in' => $checkIn,
+                'check_out' => $checkOut,
+                'status' => $statusStr,
+            ];
+        }
+
+        $result[] = [
+            'user_id' => (int) $userId,
+            'user_name' => $attendances->first()->user?->full_name ?? 'Unknown',
+            'summary' => $summary,
+            'history' => $history,
+        ];
+    }
+
+    // ================= SORT =================
+    usort($result, fn ($a, $b) => strcmp($a['user_name'], $b['user_name']));
+
+    return response()->json([
+        'success' => true,
+        'meta' => [
+            'current_time' => $request->query('current_time'),
+            'timezone' => $timezone,
+            'month' => $startDate->format('Y-m'),
+        ],
+        'data' => $result,
+    ]);
+}
+
+    /**
      * SHOW attendance dengan assignment details
      * GET /attendances/{attendance}
      */
@@ -1543,7 +2651,9 @@ class AttendanceController extends Controller
         $offDutySchedule = null;
 
         foreach ($schedules as $sch) {
-            if (!$sch->project || !$sch->assignment) continue;
+            if (! $sch->project || ! $sch->assignment) {
+                continue;
+            }
 
             $projectTz = $sch->project->timezone ?? $sch->project->organization->timezone ?? 'Asia/Jakarta';
             $nowTz = Carbon::createFromFormat('Y-m-d H:i:s', $currentTimeStr, $projectTz)->setTimezone('UTC');
@@ -1552,6 +2662,7 @@ class AttendanceController extends Controller
                 if ($sch->date instanceof \Carbon\Carbon ? $sch->date->format('Y-m-d') === $todayStr : \Carbon\Carbon::parse($sch->date)->format('Y-m-d') === $todayStr) {
                     $offDutySchedule = $sch;
                 }
+
                 continue;
             }
 
@@ -1569,28 +2680,31 @@ class AttendanceController extends Controller
             if ($nowTz->greaterThanOrEqualTo($start->copy()->subHours(4)) && $nowTz->lessThan($start->copy()->addHours(18))) {
                 $validSchedules[] = [
                     'schedule' => $sch,
-                    'start' => $start
+                    'start' => $start,
                 ];
             }
         }
 
-        if (!empty($validSchedules)) {
+        if (! empty($validSchedules)) {
             // Prioritaskan schedule shift yang paling maju/terbaru jika rentang masuk di dua hari (mencegah bentrok)
-            usort($validSchedules, function($a, $b) {
+            usort($validSchedules, function ($a, $b) {
                 return $b['start']->timestamp - $a['start']->timestamp;
             });
             $bestSchedule = $validSchedules[0]['schedule'];
             $schDate = $bestSchedule->date instanceof \Carbon\Carbon ? $bestSchedule->date->format('Y-m-d') : \Carbon\Carbon::parse($bestSchedule->date)->format('Y-m-d');
+
             return [$bestSchedule, $schDate];
         }
 
         if ($offDutySchedule) {
             $offDate = $offDutySchedule->date instanceof \Carbon\Carbon ? $offDutySchedule->date->format('Y-m-d') : \Carbon\Carbon::parse($offDutySchedule->date)->format('Y-m-d');
+
             return [$offDutySchedule, $offDate];
         }
 
         $todaySch = $schedules->firstWhere(function ($s) use ($todayStr) {
             $schDt = $s->date instanceof \Carbon\Carbon ? $s->date->format('Y-m-d') : \Carbon\Carbon::parse($s->date)->format('Y-m-d');
+
             return $schDt === $todayStr;
         });
 

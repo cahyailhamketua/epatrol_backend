@@ -3,12 +3,13 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Activity;
 use App\Models\Attendance;
 use App\Models\PatrolScan;
 use App\Services\PatrolScanService;
+use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
-use Carbon\Carbon;
 
 class PatrolScanController extends Controller
 {
@@ -55,8 +56,161 @@ class PatrolScanController extends Controller
     }
 
     /**
+     * Progress detail for attendance with patrol scan + ishoma activities + basic timesheet
+     * GET /api/attendance/{attendance}/patrol-scan/progress-detail
+     */
+    public function getProgressDetail(Attendance $attendance)
+    {
+        $this->authorize('view', $attendance);
+
+        $progress = $this->patrolScanService->getScanProgress($attendance);
+        $scanDetails = $this->patrolScanService->getScanDetails($attendance);
+
+        // Ishoma activities for post or project
+        $ishomaQuery = Activity::where('active', true)->where('name', 'like', '%ishoma%');
+        if ($attendance->post_id) {
+            $ishomaQuery->where('post_id', $attendance->post_id);
+        } else {
+            $ishomaQuery->where('project_id', $attendance->project_id)->whereNull('post_id');
+        }
+
+        $ishomaActivities = $ishomaQuery->with('assignmentTimes.assignment')->get();
+
+        // Basic timesheet data for the current member (today
+        $timesheet = [
+            'attendance_id' => $attendance->id,
+            'user_id' => $attendance->user_id,
+            'check_in_at' => $attendance->check_in_at?->toISOString(),
+            'check_out_at' => $attendance->check_out_at?->toISOString(),
+            'computed_status' => $attendance->computed_status,
+            'duration_minutes' => ($attendance->check_in_at && $attendance->check_out_at) ? $attendance->check_in_at->diffInMinutes($attendance->check_out_at) : null,
+        ];
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'attendance' => [
+                    'id' => $attendance->id,
+                    'user_id' => $attendance->user_id,
+                    'project_id' => $attendance->project_id,
+                    'post_id' => $attendance->post_id,
+                    'check_in_at' => $attendance->check_in_at?->toISOString(),
+                    'check_out_at' => $attendance->check_out_at?->toISOString(),
+                    'computed_status' => $attendance->computed_status,
+                ],
+                'progress' => $progress,
+                'scan_details' => $scanDetails,
+                'patrol_points' => $attendance->getPatrolPoints()->map(function ($point) use ($attendance) {
+                    return [
+                        'id' => $point->id,
+                        'name' => $point->name,
+                        'sequence_order' => $point->sequence_order,
+                        'is_scanned' => $attendance->patrolScans()
+                            ->whereHas('qrCode', function ($query) use ($point) {
+                                $query->where('patrol_point_id', $point->id);
+                            })->exists(),
+                    ];
+                }),
+                'ishoma_activities' => $ishomaActivities,
+                'timesheet' => $timesheet,
+            ],
+        ]);
+    }
+
+    /**
+     * List patrol points not yet scanned for given attendance
+     * GET /api/attendance/{attendance}/patrol-scan/unscanned
+     */
+    public function getUnscannedPoints(Attendance $attendance)
+    {
+        $this->authorize('view', $attendance);
+
+        $scannedQrCodeIds = $attendance->patrolScans()->pluck('qr_code_id')->toArray();
+
+        $openPoints = $attendance->getPatrolPoints()->map(function ($point) use ($scannedQrCodeIds) {
+            $isScanned = in_array($point->qrCode->id, $scannedQrCodeIds);
+
+            return [
+                'id' => $point->id,
+                'name' => $point->name,
+                'sequence_order' => $point->sequence_order,
+                'is_scanned' => $isScanned,
+            ];
+        });
+
+        $unscanned = $openPoints->filter(fn ($point) => ! $point['is_scanned'])->values();
+
+        return response()->json([
+            'success' => true,
+            'data' => [
+                'total' => $openPoints->count(),
+                'scanned' => $openPoints->count() - $unscanned->count(),
+                'unscanned' => $unscanned,
+            ],
+        ]);
+    }
+
+    /**
+     * Validate QR only for mobile flow and response remaining points
+     * POST /api/patrol-scan/check-qr
+     */
+    public function checkQr(Request $request)
+    {
+        $validated = $request->validate([
+            'attendance_id' => 'sometimes|integer',
+            'qr_code' => 'required|string',
+        ]);
+
+        if (isset($validated['attendance_id'])) {
+            $attendance = Attendance::with(['project.organization', 'user', 'assignment'])->find($validated['attendance_id']);
+            if (! $attendance) {
+                return response()->json(['success' => false, 'message' => 'Attendance tidak ditemukan'], 404);
+            }
+        } else {
+            $user = $request->user();
+            $attendance = Attendance::with(['project.organization', 'user', 'assignment'])
+                ->where('user_id', $user->id)
+                ->whereNotNull('check_in_at')
+                ->whereNull('check_out_at')
+                ->orderByDesc('check_in_at')
+                ->first();
+
+            if (! $attendance) {
+                return response()->json(['success' => false, 'message' => 'Absensi aktif tidak ditemukan'], 404);
+            }
+        }
+
+        $this->authorize('scanForAttendance', [PatrolScan::class, $attendance]);
+
+        $qrCheck = $this->patrolScanService->validateQrCode($validated['qr_code'], $attendance);
+
+        $remaining = $attendance->getPatrolPoints()->filter(function ($point) use ($attendance) {
+            return ! $attendance->patrolScans()->whereHas('qrCode', function ($query) use ($point) {
+                $query->where('patrol_point_id', $point->id);
+            })->exists();
+        })->values();
+
+        return response()->json([
+            'success' => $qrCheck['valid'],
+            'errors' => $qrCheck['errors'] ?? [],
+            'data' => [
+                'attendance_id' => $attendance->id,
+                'qr_code' => $validated['qr_code'],
+                'is_valid' => $qrCheck['valid'],
+                'remaining_patrol_points' => $remaining,
+                'scan_progress' => $this->patrolScanService->getScanProgress($attendance),
+            ],
+        ]);
+    }
+
+    /**
      * Perform patrol scan (scan QR code)
      * POST /api/patrol-scan
+     *
+     * Mendukung scanning lintas malam (midnight crossing):
+     * - Untuk shift siang biasa: scan hanya pada hari yang sama dengan jadwal
+     * - Untuk shift malam lintas malam (end_time < start_time, misal 20:00-04:00):
+     *   scan boleh dilakukan hingga jam end_time pada hari berikutnya
      *
      * Request:
      * {
@@ -65,7 +219,8 @@ class PatrolScanController extends Controller
      *   "scan_latitude": -6.1234,
      *   "scan_longitude": 106.7890,
      *   "scan_altitude": 25.5,
-     *   "note": "Optional note"
+     *   "note": "Optional note",
+     *   "current_time": "2024-04-02 23:30:00" // waktu scan dari device
      * }
      */
     public function performScan(Request $request)
@@ -90,11 +245,11 @@ class PatrolScanController extends Controller
         // - Jika attendance_id dikirim: gunakan itu (harus milik user & exist).
         // - Jika tidak: cari attendance aktif berdasarkan token (check-in sudah ada, check-out belum ada, paling baru).
         if (isset($validated['attendance_id'])) {
-            $attendance = Attendance::with(['project.organization', 'user'])
+            $attendance = Attendance::with(['project.organization', 'user', 'assignment'])
                 ->where('id', (int) $validated['attendance_id'])
                 ->first();
 
-            if (!$attendance) {
+            if (! $attendance) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Attendance tidak valid',
@@ -102,7 +257,7 @@ class PatrolScanController extends Controller
             }
 
             // Attendance harus aktif untuk scan
-            if (!$attendance->check_in_at || $attendance->check_out_at) {
+            if (! $attendance->check_in_at || $attendance->check_out_at) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Attendance tidak valid',
@@ -110,14 +265,15 @@ class PatrolScanController extends Controller
             }
         } else {
             $user = $request->user();
-            $attendance = Attendance::where('user_id', $user->id)
+            $attendance = Attendance::with(['project.organization', 'user', 'assignment'])
+                ->where('user_id', $user->id)
                 ->whereNotNull('check_in_at')
                 ->whereNull('check_out_at')
                 ->orderBy('date', 'desc')
                 ->orderBy('check_in_at', 'desc')
                 ->first();
 
-            if (!$attendance) {
+            if (! $attendance) {
                 return response()->json([
                     'success' => false,
                     'message' => 'Absensi aktif tidak ditemukan. Silakan check-in terlebih dahulu.',
@@ -127,11 +283,14 @@ class PatrolScanController extends Controller
 
         $this->authorize('scanForAttendance', [PatrolScan::class, $attendance]);
 
-        $project = $attendance->project;
-        $projectTimezone = $project?->timezone ?? $project?->organization?->timezone ?? 'Asia/Jakarta';
+        // Tentukan timezone dari project atau organization atau fallback ke default
+        $projectTimezone = 'Asia/Jakarta';
+        if ($attendance->project) {
+            $projectTimezone = $attendance->project->timezone ?? ($attendance->project->organization?->timezone ?? 'Asia/Jakarta');
+        }
+
         $scanTime = Carbon::createFromFormat('Y-m-d H:i:s', $validated['current_time'], $projectTimezone)
             ->setTimezone('UTC');
-
 
         // Normalisasi semua file agar selalu berupa array flat UploadedFile.
         // Ambil dari seluruh payload file, karena Postman bisa mengirim multiple file
@@ -160,7 +319,7 @@ class PatrolScanController extends Controller
             $photoFiles
         );
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             return response()->json([
                 'success' => false,
                 'errors' => $result['errors'],
@@ -174,6 +333,7 @@ class PatrolScanController extends Controller
                 'scan' => $result['scan']->load('photos', 'qrCode.patrolPoint'),
                 'patrol_point' => $result['patrolPoint'],
                 'progress' => $this->patrolScanService->getScanProgress($attendance),
+                'validation_warnings' => $result['warnings'] ?? [],
             ],
         ], 201);
     }
@@ -192,7 +352,7 @@ class PatrolScanController extends Controller
 
         $result = $this->patrolScanService->addPhoto($scan, $validated['photo']);
 
-        if (!$result['success']) {
+        if (! $result['success']) {
             return response()->json([
                 'success' => false,
                 'errors' => $result['errors'],
@@ -304,7 +464,7 @@ class PatrolScanController extends Controller
         $photo = \App\Models\PatrolScanPhoto::findOrFail($photoId);
         $this->authorize('download', $photo);
 
-        if (!Storage::disk('public')->exists($photo->photo)) {
+        if (! Storage::disk('public')->exists($photo->photo)) {
             return response()->json([
                 'success' => false,
                 'message' => 'File tidak ditemukan',

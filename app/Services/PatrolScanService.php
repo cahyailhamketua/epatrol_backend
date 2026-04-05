@@ -3,14 +3,12 @@
 namespace App\Services;
 
 use App\Models\Attendance;
+use App\Models\PatrolPoint;
 use App\Models\PatrolScan;
 use App\Models\PatrolScanPhoto;
 use App\Models\QrCode;
-use App\Models\PatrolPoint;
-use Illuminate\Support\Facades\DB;
-use Illuminate\Support\Facades\Storage;
 use Exception;
-use App\Services\ImageWebpService;
+use Illuminate\Support\Facades\DB;
 
 class PatrolScanService
 {
@@ -19,9 +17,8 @@ class PatrolScanService
     /**
      * Validate if user can perform patrol scan
      *
-     * @param Attendance $attendance
-     * @param mixed $user
-     * @param \Carbon\Carbon|null $scanTime Waktu scan dari device (UTC), akan dipakai untuk validasi tanggal
+     * @param  mixed  $user
+     * @param  \Carbon\Carbon|null  $scanTime  Waktu scan dari device (UTC), akan dipakai untuk validasi tanggal
      */
     public function canUserScan(Attendance $attendance, $user, ?\Carbon\Carbon $scanTime = null): array
     {
@@ -33,20 +30,69 @@ class PatrolScanService
         }
 
         // Check if attendance date matches scan date (in project timezone, from device time)
-        $projectTimezone = $attendance->project?->timezone
-            ?? $attendance->project?->organization?->timezone
-            ?? 'Asia/Jakarta';
+        $projectTimezone = 'Asia/Jakarta';
+        if ($attendance->project) {
+            $projectTimezone = $attendance->project->timezone ?? ($attendance->project->organization?->timezone ?? 'Asia/Jakarta');
+        }
 
         // Jika scanTime tersedia, gunakan itu sebagai sumber tanggal (seperti flow attendance)
         if ($scanTime) {
             $scanDateInProjectTz = $scanTime->copy()->setTimezone($projectTimezone)->toDateString();
+            $scanTimeInProjectTz = $scanTime->copy()->setTimezone($projectTimezone);
         } else {
             // Fallback ke "hari ini" di project timezone jika tidak ada scanTime (backward compatibility)
             $scanDateInProjectTz = now($projectTimezone)->toDateString();
+            $scanTimeInProjectTz = now($projectTimezone);
         }
 
-        if ($attendance->date->toDateString() !== $scanDateInProjectTz) {
-            $errors[] = 'Hanya bisa scan pada hari yang sama dengan jadwal (timezone: ' . $projectTimezone . ')';
+        // Validasi tanggal scan dengan dukungan lintas malam
+        if (! $attendance->date) {
+            $errors[] = 'Tanggal attendance tidak valid';
+
+            return [
+                'valid' => false,
+                'errors' => $errors,
+            ];
+        }
+
+        $attendanceDate = $attendance->date->toDateString();
+        $isValidDate = false;
+        $isLintasMalam = false;
+
+        if ($attendanceDate === $scanDateInProjectTz) {
+            // Scan pada hari yang sama: selalu valid
+            $isValidDate = true;
+        } else {
+            // Cek apakah ini shift lintas malam (midnight crossing)
+            $assignment = $attendance->assignment;
+            if ($assignment) {
+                $startTime = \Carbon\Carbon::createFromFormat('H:i:s', $assignment->start_time);
+                $endTime = \Carbon\Carbon::createFromFormat('H:i:s', $assignment->end_time);
+
+                // Shift lintas malam jika end_time <= start_time
+                if ($endTime->lessThanOrEqualTo($startTime)) {
+                    $isLintasMalam = true;
+
+                    // Untuk shift lintas malam, allow scan pada hari berikutnya
+                    // sampai jam end_time dimulai
+                    $nextDay = (clone $attendance->date)->addDay()->toDateString();
+                    if ($nextDay === $scanDateInProjectTz) {
+                        // Cek apakah scan time masih sebelum atau sama dengan end_time
+                        $scanTimeOnly = $scanTimeInProjectTz->format('H:i:s');
+                        if ($scanTimeOnly <= $endTime->format('H:i:s')) {
+                            $isValidDate = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if (! $isValidDate) {
+            if ($isLintasMalam && $attendance->assignment) {
+                $errors[] = 'Scan hanya bisa dilakukan hingga jam '.\Carbon\Carbon::createFromFormat('H:i:s', $attendance->assignment->end_time)->format('H:i').' pada hari berikutnya';
+            } else {
+                $errors[] = 'Hanya bisa scan pada hari yang sama dengan jadwal (timezone: '.$projectTimezone.')';
+            }
         }
 
         // Check if already checked out
@@ -55,18 +101,18 @@ class PatrolScanService
         }
 
         // Check if attendance hasn't checked in yet
-        if (!$attendance->check_in_at) {
+        if (! $attendance->check_in_at) {
             $errors[] = 'Silakan check-in terlebih dahulu';
         }
 
         // For member: verify post is selected
-        if (!$attendance->isCommanderAttendance() && !$attendance->post_id) {
+        if (! $attendance->isCommanderAttendance() && ! $attendance->post_id) {
             $errors[] = 'Harap pilih post terlebih dahulu';
         }
 
         // Member on static post: no patrol scan required/allowed
         if (
-            !$attendance->isCommanderAttendance()
+            ! $attendance->isCommanderAttendance()
             && $attendance->post
             && $attendance->post->type === 'static'
         ) {
@@ -102,13 +148,15 @@ class PatrolScanService
 
         $errors = [];
 
-        if (!$qr) {
+        if (! $qr) {
             $errors[] = 'QR Code tidak ditemukan';
+
             return ['valid' => false, 'errors' => $errors, 'qr' => null];
         }
 
-        if (!$qr->active) {
+        if (! $qr->active) {
             $errors[] = 'QR Code tidak aktif';
+
             return ['valid' => false, 'errors' => $errors, 'qr' => $qr];
         }
 
@@ -120,7 +168,7 @@ class PatrolScanService
                 ->pluck('id')
                 ->all() ?? [];
 
-            if (empty($staticPostIds) || !in_array($qr->patrolPoint->post_id, $staticPostIds, true)) {
+            if (empty($staticPostIds) || ! in_array($qr->patrolPoint->post_id, $staticPostIds, true)) {
                 $errors[] = 'QR Code tidak sesuai dengan pos static di project Anda';
             }
         } else {
@@ -178,14 +226,17 @@ class PatrolScanService
             ->toArray();
 
         // Get the next expected sequence (highest scanned + 1)
-        $nextExpectedSequence = empty($scannedSequences) 
-            ? $allPoints->first()->sequence_order 
+        $nextExpectedSequence = empty($scannedSequences)
+            ? $allPoints->first()->sequence_order
             : max($scannedSequences) + 1;
 
-        // Check if current scan is the next expected
+        $warnings = [];
+
+        // Non-strict sequence: boleh scan tidak berurutan, only warning.
         if ($currentSequence !== $nextExpectedSequence) {
             $nextPoint = $allPoints->firstWhere('sequence_order', $nextExpectedSequence);
-            $errors[] = "Anda harus scan point '{$nextPoint->name}' terlebih dahulu (urutan {$nextExpectedSequence})";
+            $warnings[] = "Urutan scan tidak konsisten untuk patrol point '{$patrolPoint->name}'. ".
+                        "Rekomendasi selanjutnya: '{$nextPoint->name}' (urutan {$nextExpectedSequence}).";
         }
 
         // Check if already scanned this exact qr
@@ -196,6 +247,7 @@ class PatrolScanService
         return [
             'valid' => empty($errors),
             'errors' => $errors,
+            'warnings' => $warnings,
             'nextExpectedSequence' => $nextExpectedSequence,
             'scannedSequences' => $scannedSequences,
         ];
@@ -276,7 +328,7 @@ class PatrolScanService
                 auth()->user(),
                 $scanTime instanceof \Carbon\Carbon ? $scanTime : null
             );
-            if (!$userValidation['valid']) {
+            if (! $userValidation['valid']) {
                 return [
                     'success' => false,
                     'errors' => $userValidation['errors'],
@@ -285,7 +337,7 @@ class PatrolScanService
 
             // Validate QR code
             $qrValidation = $this->validateQrCode($qrCode, $attendance);
-            if (!$qrValidation['valid']) {
+            if (! $qrValidation['valid']) {
                 return [
                     'success' => false,
                     'errors' => $qrValidation['errors'],
@@ -295,9 +347,9 @@ class PatrolScanService
             $qr = $qrValidation['qr'];
             $patrolPoint = $qr->patrolPoint;
 
-            // Validate sequence order
+            // Validate sequence order (non-strict, warning saja bila tidak berurutan)
             $sequenceValidation = $this->validateSequenceOrder($attendance, $patrolPoint);
-            if (!$sequenceValidation['valid']) {
+            if (! $sequenceValidation['valid']) {
                 return [
                     'success' => false,
                     'errors' => $sequenceValidation['errors'],
@@ -312,7 +364,7 @@ class PatrolScanService
                 $scanLongitude,
                 $scanAltitude
             );
-            if (!$locationValidation['valid']) {
+            if (! $locationValidation['valid']) {
                 return [
                     'success' => false,
                     'errors' => $locationValidation['errors'],
@@ -331,7 +383,7 @@ class PatrolScanService
 
             // Enforce and store photos (required)
             if (count($photoFiles) < self::MIN_PHOTOS_PER_SCAN) {
-                throw new Exception('Minimal ' . self::MIN_PHOTOS_PER_SCAN . ' foto wajib diupload untuk setiap scan');
+                throw new Exception('Minimal '.self::MIN_PHOTOS_PER_SCAN.' foto wajib diupload untuk setiap scan');
             }
 
             foreach ($photoFiles as $photoFile) {
@@ -349,9 +401,11 @@ class PatrolScanService
                 'scan' => $scan,
                 'patrolPoint' => $patrolPoint,
                 'message' => "Scan '{$patrolPoint->name}' berhasil dicatat ({$sequenceValidation['nextExpectedSequence']}/{$attendance->getPatrolPoints()->count()})",
+                'warnings' => $sequenceValidation['warnings'] ?? [],
             ];
         } catch (Exception $e) {
             DB::rollBack();
+
             return [
                 'success' => false,
                 'errors' => ['error' => $e->getMessage()],
@@ -366,7 +420,7 @@ class PatrolScanService
     {
         try {
             // Validate file
-            if (!$photoFile) {
+            if (! $photoFile) {
                 return [
                     'success' => false,
                     'errors' => ['photo' => 'File foto tidak ditemukan'],
@@ -418,6 +472,7 @@ class PatrolScanService
     public function isAllScansCompleted(Attendance $attendance): bool
     {
         $progress = $this->getScanProgress($attendance);
+
         return $progress['completed'];
     }
 

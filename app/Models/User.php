@@ -11,7 +11,8 @@ use Laravel\Sanctum\HasApiTokens;
 class User extends Authenticatable
 {
     /** @use HasFactory<\Database\Factories\UserFactory> */
-    use HasFactory, HasApiTokens, Notifiable;
+    use HasApiTokens, HasFactory, Notifiable;
+
     /**
      * The attributes that are mass assignable.
      *
@@ -60,52 +61,57 @@ class User extends Authenticatable
         ];
     }
 
-        /* ================= RELATIONS ================= */
+    /* ================= RELATIONS ================= */
 
-        public function organization()
-        {
-            return $this->belongsTo(Organization::class);
-        }
-    
-        public function project()
-        {
-            return $this->belongsTo(Project::class);
-        }
-    
-        public function schedules()
-        {
-            return $this->hasMany(Schedule::class);
-        }
-    
-        public function attendances()
-        {
-            return $this->hasMany(Attendance::class);
-        }
-
-        public function absences()
-        {
-            return $this->hasManyThrough(Absence::class, Schedule::class);
-        }
-
-        public function overtimeLogs()
-        {
-            return $this->hasMany(OvertimeLog::class);
-        }
-
-        public function payrollDetails()
-        {
-            return $this->hasMany(PayrollDetail::class);
-        }
-
-        public function approvedPayrollRuns()
-        {
-            return $this->hasMany(PayrollRun::class, 'finalized_by');
-        }
-
-        public function teams()
+    public function organization()
     {
-        return $this->belongsToMany(Team::class,'team_users')
-            ->withPivot('start_date','end_date')
+        return $this->belongsTo(Organization::class);
+    }
+
+    public function project()
+    {
+        return $this->belongsTo(Project::class);
+    }
+
+    public function schedules()
+    {
+        return $this->hasMany(Schedule::class);
+    }
+
+    public function attendances()
+    {
+        return $this->hasMany(Attendance::class);
+    }
+
+    public function absences()
+    {
+        return $this->hasManyThrough(Absence::class, Schedule::class);
+    }
+
+    public function overtimeLogs()
+    {
+        return $this->hasMany(OvertimeLog::class);
+    }
+
+    public function payrollDetails()
+    {
+        return $this->hasMany(PayrollDetail::class);
+    }
+
+    public function approvedPayrollRuns()
+    {
+        return $this->hasMany(PayrollRun::class, 'finalized_by');
+    }
+
+    public function payrollTemplates()
+    {
+        return $this->hasMany(PayrollUserTemplate::class);
+    }
+
+    public function teams()
+    {
+        return $this->belongsToMany(Team::class, 'team_users')
+            ->withPivot('start_date', 'end_date')
             ->withTimestamps();
     }
 

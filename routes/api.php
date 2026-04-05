@@ -10,6 +10,7 @@ use App\Http\Controllers\Api\OrganizationController;
 use App\Http\Controllers\Api\OvertimeLogController;
 use App\Http\Controllers\Api\PatrolPointController;
 use App\Http\Controllers\Api\PatrolScanController;
+use App\Http\Controllers\Api\PayrollController;
 use App\Http\Controllers\Api\PostController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\QrCodeController;
@@ -138,16 +139,19 @@ Route::middleware('auth:sanctum')->group(function () {
 Route::middleware('auth:sanctum')->group(function () {
     // All activities grouped by post & assignment
     Route::get('/activities/schedule', [ActivityController::class, 'schedule']);
+    Route::get('/activities', [ActivityController::class, 'getAll']); // get all activity assignment time, with optional filter by project, post, assignment, user
+    Route::get('/activities/indexactivity', [ActivityController::class, 'indexactivity']); // Khusus dev: lihat semua activity yang sudah dibuat
 
     // Route::get('/posts/{post}/activities', [ActivityController::class, 'index']);
-    Route::get('/posts/activities/get', [ActivityController::class, 'index']);
+    Route::get('/activities/filter', [ActivityController::class, 'index']);
     Route::get('/posts/{post}/activities/schedule', [ActivityController::class, 'scheduleByPost']);
     // Route::post('/posts/{post}/activities', [ActivityController::class, 'store']);
     Route::post('/posts/activities', [ActivityController::class, 'store']);
     // Route::put('/posts/{post}/activities', [ActivityController::class, 'update']);
-    Route::put('/posts/activities', [ActivityController::class, 'update']);
+    Route::put('/posts/activities/put', [ActivityController::class, 'update']);
     Route::put('/activities/{activity}', [ActivityController::class, 'updateActivity']);
-    Route::delete('/activities/{activity}', [ActivityController::class, 'destroy']);
+    // Route::delete('/activities/{activity}', [ActivityController::class, 'destroy']);
+    Route::delete('/activities/delete', [ActivityController::class, 'delete']);
 });
 
 // activity assignment time routes
@@ -209,6 +213,19 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::post('/teams/{team}/members', [ScheduleController::class, 'addTeamMember']);
 });
 
+// payroll routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/projects/{project}/payroll/sheet', [PayrollController::class, 'sheet']);
+    Route::get('/projects/{project}/payroll/export', [PayrollController::class, 'downloadSheet']);
+    Route::post('/projects/{project}/payroll/release', [PayrollController::class, 'release']);
+    Route::post('/projects/{project}/payroll/recalculate', [PayrollController::class, 'recalculate']);
+    Route::post('/projects/{project}/payroll/templates', [PayrollController::class, 'upsertTemplates']);
+
+    Route::get('/my/payroll/history', [PayrollController::class, 'myHistory']);
+    Route::get('/my/payroll/{month}', [PayrollController::class, 'myDetail']);
+    Route::get('/my/payroll/{month}/download', [PayrollController::class, 'mySlipDownload']);
+});
+
 // Attendance routes
 Route::middleware('auth:sanctum')->group(function () {
     // List attendances (dengan filter)
@@ -231,6 +248,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Check-out
     Route::post('/attendances/check-out', [AttendanceController::class, 'checkOut']);
+
+    // Timesheet
+    Route::get('/attendances/timesheet', [AttendanceController::class, 'timesheet']);
 
     // View attendance detail
     Route::get('/attendances/{attendance}', [AttendanceController::class, 'show']);
@@ -257,6 +277,25 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Get scan progress for attendance
     Route::get('/attendance/{attendance}/patrol-scan/progress', [PatrolScanController::class, 'getProgress']);
+
+    // Post progress detail (attendance controller): danru/admin_lapang/ho
+    // By attendance_id (ambil assignment_id dari user checkin di post)
+    // Route::post('/attendance/progress-post-detail', [AttendanceController::class, 'progressPostDetailByAttendance']);
+
+    // Post progress detail by post (existing)
+    Route::get('/posts/{post}/attendance/progress-detail', [AttendanceController::class, 'progressPostDetail']);
+
+    // Post members timesheet
+    Route::get('/posts/{post}/members-timesheet', [AttendanceController::class, 'postMembersTimesheet']);
+
+    // Get extended progress detail (includes ishoma, timesheet, patrol point status)
+    Route::get('/attendance/{attendance}/patrol-scan/progress-detail', [PatrolScanController::class, 'getProgressDetail']);
+
+    // Get unscanned patrol points for attendance
+    Route::get('/attendance/{attendance}/patrol-scan/unscanned', [PatrolScanController::class, 'getUnscannedPoints']);
+
+    // Quick QR check / remaining point info (mobile)
+    Route::post('/patrol-scan/check-qr', [PatrolScanController::class, 'checkQr']);
 
     // Get all scans for attendance
     Route::get('/attendance/{attendance}/patrol-scans', [PatrolScanController::class, 'getAttendanceScans']);

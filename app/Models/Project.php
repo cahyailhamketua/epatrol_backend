@@ -2,8 +2,8 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model; 
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 
 class Project extends Model
 {
@@ -19,7 +19,7 @@ class Project extends Model
         'location_city',
         'timezone',
         'radius',
-        'active'
+        'active',
     ];
 
     public function organization()
@@ -46,7 +46,7 @@ class Project extends Model
     {
         return $this->hasMany(Activity::class);
     }
-    
+
     public function assignments()
     {
         return $this->hasMany(Assignment::class);
@@ -65,5 +65,15 @@ class Project extends Model
     public function teams()
     {
         return $this->hasMany(Team::class);
+    }
+
+    public function payrollRuns()
+    {
+        return $this->hasMany(PayrollRun::class);
+    }
+
+    public function payrollTemplates()
+    {
+        return $this->hasMany(PayrollUserTemplate::class);
     }
 }

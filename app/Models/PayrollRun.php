@@ -2,24 +2,35 @@
 
 namespace App\Models;
 
-use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
 
 class PayrollRun extends Model
 {
     use HasFactory;
+
+    public const STATUS_DRAFT = 'DRAFT';
+
+    public const STATUS_FINALIZED = 'FINALIZED';
+
+    public const STATUS_PAID = 'PAID';
+
+    public const STATUS_CANCELLED = 'CANCELLED';
 
     protected $fillable = [
         'project_id',
         'payroll_policy_id',
         'year',
         'month',
+        'period',
         'pay_period_start',
         'pay_period_end',
         'status',
         'finalized_by',
         'finalized_at',
         'paid_at',
+        'generated_at',
+        'released_at',
         'total_employees',
         'total_payroll_amount',
         'total_deductions',
@@ -32,6 +43,8 @@ class PayrollRun extends Model
         'pay_period_end' => 'date',
         'finalized_at' => 'datetime',
         'paid_at' => 'datetime',
+        'generated_at' => 'datetime',
+        'released_at' => 'datetime',
         'total_payroll_amount' => 'decimal:2',
         'total_deductions' => 'decimal:2',
         'total_additions' => 'decimal:2',
@@ -60,17 +73,17 @@ class PayrollRun extends Model
     // Scopes
     public function scopeDraft($query)
     {
-        return $query->where('status', 'DRAFT');
+        return $query->where('status', self::STATUS_DRAFT);
     }
 
     public function scopeFinalized($query)
     {
-        return $query->where('status', 'FINALIZED');
+        return $query->where('status', self::STATUS_FINALIZED);
     }
 
     public function scopePaid($query)
     {
-        return $query->where('status', 'PAID');
+        return $query->where('status', self::STATUS_PAID);
     }
 
     public function scopeByProject($query, $projectId)
@@ -83,25 +96,30 @@ class PayrollRun extends Model
         return $query->where('year', $year)->where('month', $month);
     }
 
-    // Accessors
-    public function isPending()
+    public function scopeByPeriodString($query, string $period)
     {
-        return $this->status === 'DRAFT';
+        return $query->where('period', $period);
+    }
+
+    // Accessors
+    public function isDraft(): bool
+    {
+        return $this->status === self::STATUS_DRAFT;
     }
 
     public function isFinalized()
     {
-        return $this->status === 'FINALIZED';
+        return $this->status === self::STATUS_FINALIZED;
     }
 
     public function isPaid()
     {
-        return $this->status === 'PAID';
+        return $this->status === self::STATUS_PAID;
     }
 
     public function isCancelled()
     {
-        return $this->status === 'CANCELLED';
+        return $this->status === self::STATUS_CANCELLED;
     }
 
     // Helpers
