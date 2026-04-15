@@ -3,78 +3,95 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use Illuminate\Http\Request;
+use App\Models\Schedule;
+use App\Models\TeamUser;
 use App\Models\User;
-use Illuminate\Support\Facades\Validator;
-use Illuminate\Support\Facades\Hash;
-use Illuminate\Support\Facades\Auth;
+use App\Services\ImageWebpService;
+use App\Support\SignedMediaUrl;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
-use App\Services\ImageWebpService;
-use App\Models\TeamUser;
-use App\Models\Schedule;
-use Carbon\Carbon;
-use Illuminate\Support\Facades\DB;
 
 class UserController extends Controller
 {
     /**
      * Display a listing of the resource.
      */
-    public function index(Request $request)
-    {
-        $auth = $request->user();
+public function index(Request $request)
+{
+    $auth = $request->user();
 
-        $this->authorize('viewAny', User::class);
+    $this->authorize('viewAny', User::class);
 
-        try {
-            $request->validate([
-                'search' => 'nullable|string',
-                'active' => 'nullable|boolean',
-                'per_page' => 'nullable|integer|min:1',
-            ]);
-        } catch (ValidationException $e) {
-            return response()->json([
-                'success'     => false,
-                'message'     => 'Validation failed',
-                'status_code' => 422,
-                'errors'      => $e->errors(),
-            ], 422);
-        }
-        $users = User::query()
-            ->select(
-                'id',
-                'full_name',
-                'username',
-                'email',
-                'role',
-                'project_id',
-                'organization_id',
-                'active'
-            )
-            ->when($auth->role === 'admin_project', function ($q) use ($auth) {
-                // 🔐 admin project hanya lihat user di project-nya
-                $q->where('project_id', $auth->project_id);
-            })
-            ->when(in_array($auth->role, ['anggota', 'komandan_regu']), function ($q) {
-                // ❌ role ini tidak boleh list user
-                $q->whereRaw('1 = 0');
-            })
-            ->when($request->filled('search'), fn ($q) =>
-                $q->where('full_name', 'like', '%' . $request->search . '%')
-            )
-            ->when($request->has('active'), fn ($q) =>
-                $q->where('active', $request->boolean('active'))
-            )
-            ->when($auth->role !== 'dev', function ($q) {
-                $q->where('active', true);
-            })
-            ->orderBy('full_name')
-            ->paginate($request->get('per_page', 15));
-    
-        return response()->json($users);
+    try {
+        $request->validate([
+            'search' => 'nullable|string',
+            'active' => 'nullable|boolean',
+        ]);
+    } catch (ValidationException $e) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Validation failed',
+            'status_code' => 422,
+            'errors' => $e->errors(),
+        ], 422);
     }
+
+    $users = User::query()
+        ->select(
+            'id',
+            'full_name',
+            'username',
+            'email',
+            'role',
+            'project_id',
+            'organization_id',
+            'active',
+            'avatar' // penting untuk generate avatar_url
+        )
+        ->when($auth->role === 'admin_project', function ($q) use ($auth) {
+            // 🔐 admin project hanya lihat user di project-nya
+            $q->where('project_id', $auth->project_id);
+        })
+        ->when(in_array($auth->role, ['anggota', 'komandan_regu']), function ($q) {
+            // ❌ role ini tidak boleh list user
+            $q->whereRaw('1 = 0');
+        })
+        ->when($request->filled('search'), function ($q) use ($request) {
+            $q->where('full_name', 'like', '%' . $request->search . '%');
+        })
+        ->when($request->has('active'), function ($q) use ($request) {
+            $q->where('active', $request->boolean('active'));
+        })
+        ->when($auth->role !== 'dev', function ($q) {
+            $q->where('active', true);
+        })
+        ->get()
+        ->map(function ($user) {
+            return [
+                'id' => $user->id,
+                'full_name' => $user->full_name,
+                'username' => $user->username,
+                'email' => $user->email,
+                'role' => $user->role,
+                'project_id' => $user->project_id,
+                'organization_id' => $user->organization_id,
+                'active' => $user->active,
+                'avatar_url' => $user->avatar
+                    ? SignedMediaUrl::userAvatar($user)
+                    : null,
+            ];
+        });
+
+    return response()->json([
+        'success' => true,
+        'message' => 'List users berhasil diambil',
+        'data' => $users,
+    ]);
+}
 
     /**
      * Store a newly created resource in storage.
@@ -86,27 +103,27 @@ class UserController extends Controller
         // 🔒 HANYA DEV YANG BOLEH CREATE USER
         if ($authUser->role !== 'dev') {
             return response()->json([
-                'message' => 'Unauthorized. Only developer can create users.'
+                'message' => 'Unauthorized. Only developer can create users.',
             ], 403);
         }
 
         try {
             $validated = $request->validate([
                 'organization_id' => 'nullable|exists:organizations,id',
-                'project_id'      => 'nullable|exists:projects,id',
-                'full_name'       => 'required|string|max:255',
-                'username'        => 'required|string|unique:users,username',
-                'email'           => 'nullable|email|unique:users,email',
-                'phone'           => 'nullable|string',
-                'role'            => 'required|string',
-                'password'        => 'required|min:6',
+                'project_id' => 'nullable|exists:projects,id',
+                'full_name' => 'required|string|max:255',
+                'username' => 'required|string|unique:users,username',
+                'email' => 'nullable|email|unique:users,email',
+                'phone' => 'nullable|string',
+                'role' => 'required|string',
+                'password' => 'required|min:6',
             ]);
         } catch (ValidationException $e) {
             return response()->json([
-                'success'     => false,
-                'message'     => 'Validation failed',
+                'success' => false,
+                'message' => 'Validation failed',
                 'status_code' => 422,
-                'errors'      => $e->errors(),
+                'errors' => $e->errors(),
             ], 422);
         }
 
@@ -116,10 +133,9 @@ class UserController extends Controller
 
         return response()->json([
             'message' => 'User created successfully',
-            'data' => $user
+            'data' => $user,
         ], 201);
     }
-
 
     /**
      * Display the specified resource.
@@ -132,7 +148,6 @@ class UserController extends Controller
             'data' => $user,
         ]);
     }
-
 
     /**
      * Update the specified resource in storage.
@@ -183,7 +198,7 @@ class UserController extends Controller
 
         $validated = array_filter(
             $validated,
-            fn ($value) => !is_null($value) && $value !== ''
+            fn ($value) => ! is_null($value) && $value !== ''
         );
 
         $user->update($validated);
@@ -193,7 +208,8 @@ class UserController extends Controller
             'data' => array_merge(
                 $user->fresh()->toArray(),
                 [
-                    'avatar_url' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
+                    'avatar_url' => $user->avatar ? SignedMediaUrl::userAvatar($user) : null,
+                    'avatar_storage_url_legacy' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
                 ]
             ),
         ]);
@@ -239,7 +255,7 @@ class UserController extends Controller
         ]);
     }
 
-     /**
+    /**
      * AKTIFKAN KEMBALI USER
      */
     public function activate(User $user)

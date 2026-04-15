@@ -21,7 +21,21 @@ class ScheduleSheetService
         | 1️⃣ GET ALL SCHEDULES (BULK)
         |--------------------------------------------------------------------------
         */
-        $schedules = Schedule::with(['user', 'assignment', 'team'])
+        $schedules = Schedule::query()
+            ->select([
+                'id',
+                'project_id',
+                'user_id',
+                'assignment_id',
+                'team_id',
+                'membership_status',
+                'date',
+            ])
+            ->with([
+                'user:id,full_name',
+                'assignment:id,code,is_off',
+                'team:id,name',
+            ])
             ->where('project_id', $projectId)
             ->whereBetween('date', [$startDate, $endDate])
             ->get();
@@ -31,7 +45,18 @@ class ScheduleSheetService
         | 2️⃣ GET ATTENDANCES
         |--------------------------------------------------------------------------
         */
-        $attendances = Attendance::where('project_id', $projectId)
+        $attendances = Attendance::query()
+            ->select([
+                'id',
+                'project_id',
+                'user_id',
+                'date',
+                'attendance_status',
+                'late_minutes',
+                'check_in_at',
+                'check_out_at',
+            ])
+            ->where('project_id', $projectId)
             ->whereBetween('date', [$startDate, $endDate])
             ->get()
             ->keyBy(fn($a) => $a->user_id . '_' . $a->date->format('Y-m-d'));
@@ -41,17 +66,30 @@ class ScheduleSheetService
         | 3️⃣ GET ABSENCES (per schedule_id, relasi ke sel sheet)
         |--------------------------------------------------------------------------
         */
-        $absences = Absence::whereIn(
-            'schedule_id',
-            $schedules->pluck('id')
-        )->get()->keyBy('schedule_id');
+        $scheduleIds = $schedules->pluck('id');
+        $absences = $scheduleIds->isEmpty()
+            ? collect()
+            : Absence::query()
+                ->select(['id', 'schedule_id', 'absence_type'])
+                ->whereIn('schedule_id', $scheduleIds)
+                ->get()
+                ->keyBy('schedule_id');
 
         /*
         |--------------------------------------------------------------------------
         | 4️⃣ GET OVERTIME (lembur hari OFF, keyed by schedule_id)
         |--------------------------------------------------------------------------
         */
-        $overtimes = OvertimeLog::with('workAssignment')
+        $overtimes = OvertimeLog::query()
+            ->select([
+                'id',
+                'project_id',
+                'schedule_id',
+                'date',
+                'display_code',
+                'work_assignment_id',
+            ])
+            ->with('workAssignment:id,code')
             ->where('project_id', $projectId)
             ->whereBetween('date', [$startDate, $endDate])
             ->get()
@@ -81,6 +119,11 @@ class ScheduleSheetService
         foreach ($grouped as $userId => $userSchedules) {
 
             $user = $userSchedules->first()->user;
+            $userSchedulesByDate = $userSchedules->keyBy(
+                fn($schedule) => $schedule->date instanceof Carbon
+                    ? $schedule->date->format('Y-m-d')
+                    : (string) $schedule->date
+            );
 
             // Agregasi internal per user (untuk menghitung summary akhir; tidak diexpose sebagai raw_summary)
             $summary = [
@@ -104,7 +147,7 @@ class ScheduleSheetService
 
                 $dateString = $date->format('Y-m-d');
 
-                $schedule = $userSchedules->firstWhere('date', $dateString);
+                $schedule = $userSchedulesByDate[$dateString] ?? null;
 
                 if (!$schedule) {
                     continue;

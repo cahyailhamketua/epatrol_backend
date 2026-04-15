@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Models\User;
+use App\Support\SignedMediaUrl;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Storage;
@@ -23,16 +24,16 @@ class AuthController extends Controller
 
         $user = User::where('username', $credentials['username'])->first();
 
-        if (!$user || !Hash::check($credentials['password'], $user->password)) {
+        if (! $user || ! Hash::check($credentials['password'], $user->password)) {
             throw ValidationException::withMessages([
                 'username' => ['Username atau password salah'],
             ]);
         }
 
         // ❌ user nonaktif
-        if (!$user->active) {
+        if (! $user->active) {
             return response()->json([
-                'message' => 'Akun Anda tidak aktif. Silakan hubungi admin.'
+                'message' => 'Akun Anda tidak aktif. Silakan hubungi admin.',
             ], 403);
         }
 
@@ -52,7 +53,8 @@ class AuthController extends Controller
                 'project_id' => $user->project_id,
                 'organization_id' => $user->organization_id,
                 'avatar' => $user->avatar,
-                'avatar_url' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
+                'avatar_url' => $user->avatar ? SignedMediaUrl::userAvatar($user) : null,
+                'avatar_storage_url_legacy' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
             ],
         ]);
     }
@@ -81,7 +83,7 @@ class AuthController extends Controller
             'new_password' => 'required|string|min:8|confirmed',
         ]);
 
-        if (!Hash::check($validated['current_password'], $user->password)) {
+        if (! Hash::check($validated['current_password'], $user->password)) {
             throw ValidationException::withMessages([
                 'current_password' => ['Password lama tidak sesuai'],
             ]);
@@ -105,11 +107,13 @@ class AuthController extends Controller
     public function me(Request $request)
     {
         $user = $request->user();
+
         return response()->json([
             'user' => array_merge(
                 $user->toArray(),
                 [
-                    'avatar_url' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
+                    'avatar_url' => $user->avatar ? SignedMediaUrl::userAvatar($user) : null,
+                    'avatar_storage_url_legacy' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
                 ]
             ),
         ]);

@@ -9,6 +9,10 @@ use App\Models\PatrolScanPhoto;
 use App\Models\QrCode;
 use Exception;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Redis;
+use App\Jobs\ProcessPatrolScanPhotos;
+use App\Jobs\RebuildProjectReportCache;
 
 class PatrolScanService
 {
@@ -186,71 +190,131 @@ class PatrolScanService
     }
 
     /**
-     * Check if scan sequence is valid
-     * Member must scan in order
+     * Check if scan sequence is valid.
+     * Non-strict: boleh tidak berurutan (warning saja), tapi tidak boleh scan ulang.
      */
     public function validateSequenceOrder(Attendance $attendance, PatrolPoint $patrolPoint): array
     {
         $errors = [];
 
         if ($attendance->isCommanderAttendance()) {
-            // Commander: only 1 point, but still prevent duplicate scan
             $alreadyScanned = $attendance->patrolScans()
                 ->where('qr_code_id', $patrolPoint->qrCode->id)
                 ->exists();
 
             if ($alreadyScanned) {
-                $errors[] = "Anda sudah scan point '{$patrolPoint->name}' sebelumnya";
+                return [
+                    'valid'               => false,
+                    'errors'              => ["Anda sudah scan point '{$patrolPoint->name}' sebelumnya"],
+                    'already_scanned'     => true,
+                    'nearby_unscanned'    => [],
+                    'warnings'            => [],
+                    'nextExpectedSequence'=> 1,
+                    'scannedSequences'    => [],
+                ];
             }
 
             return [
-                'valid' => empty($errors),
-                'errors' => $errors,
-                'nextExpectedSequence' => 1,
-                'scannedSequences' => [],
+                'valid'               => true,
+                'errors'              => [],
+                'already_scanned'     => false,
+                'nearby_unscanned'    => [],
+                'warnings'            => [],
+                'nextExpectedSequence'=> 1,
+                'scannedSequences'    => [],
             ];
         }
 
-        // Get all patrol points for this post, ordered by sequence
-        $allPoints = $attendance->post->patrolPoints()->get();
+        // Load semua patrol points beserta qrCode (eager load untuk menghindari N+1)
+        $allPoints = $attendance->post->patrolPoints()->with('qrCode')->orderBy('sequence_order')->get();
         $currentSequence = $patrolPoint->sequence_order;
 
-        // Get already scanned points for this attendance
-        $scannedQrIds = $attendance->patrolScans()
-            ->pluck('qr_code_id')
+        // QR ID yang sudah di-scan oleh attendance ini
+        $scannedQrIds = $attendance->patrolScans()->pluck('qr_code_id')->toArray();
+
+        // Cek duplikat scan
+        if (in_array($patrolPoint->qrCode->id, $scannedQrIds)) {
+            $nearbyUnscanned = $this->getNearbyUnscannedPoints($allPoints, $scannedQrIds, $currentSequence);
+
+            return [
+                'valid'               => false,
+                'errors'              => ["Anda sudah scan point '{$patrolPoint->name}' sebelumnya"],
+                'already_scanned'     => true,
+                'nearby_unscanned'    => $nearbyUnscanned,
+                'warnings'            => [],
+                'nextExpectedSequence'=> null,
+                'scannedSequences'    => [],
+            ];
+        }
+
+        // Sequence sudah di-scan
+        $scannedSequences = $allPoints
+            ->filter(fn($p) => $p->qrCode && in_array($p->qrCode->id, $scannedQrIds))
+            ->pluck('sequence_order')
             ->toArray();
 
-        $scannedSequences = PatrolPoint::whereHas('qrCode', function ($query) use ($scannedQrIds) {
-            $query->whereIn('id', $scannedQrIds);
-        })->pluck('sequence_order')
-            ->toArray();
-
-        // Get the next expected sequence (highest scanned + 1)
         $nextExpectedSequence = empty($scannedSequences)
-            ? $allPoints->first()->sequence_order
+            ? ($allPoints->first()->sequence_order ?? 1)
             : max($scannedSequences) + 1;
 
         $warnings = [];
-
-        // Non-strict sequence: boleh scan tidak berurutan, only warning.
         if ($currentSequence !== $nextExpectedSequence) {
             $nextPoint = $allPoints->firstWhere('sequence_order', $nextExpectedSequence);
-            $warnings[] = "Urutan scan tidak konsisten untuk patrol point '{$patrolPoint->name}'. ".
-                        "Rekomendasi selanjutnya: '{$nextPoint->name}' (urutan {$nextExpectedSequence}).";
-        }
-
-        // Check if already scanned this exact qr
-        if (in_array($patrolPoint->qrCode->id, $scannedQrIds)) {
-            $errors[] = "Anda sudah scan point '{$patrolPoint->name}' sebelumnya";
+            if ($nextPoint) {
+                $warnings[] = "Urutan scan tidak konsisten untuk patrol point '{$patrolPoint->name}'. "
+                    . "Rekomendasi selanjutnya: '{$nextPoint->name}' (urutan {$nextExpectedSequence}).";
+            } else {
+                $warnings[] = "Urutan scan tidak konsisten untuk patrol point '{$patrolPoint->name}'.";
+            }
         }
 
         return [
-            'valid' => empty($errors),
-            'errors' => $errors,
-            'warnings' => $warnings,
-            'nextExpectedSequence' => $nextExpectedSequence,
-            'scannedSequences' => $scannedSequences,
+            'valid'               => true,
+            'errors'              => [],
+            'already_scanned'     => false,
+            'nearby_unscanned'    => [],
+            'warnings'            => $warnings,
+            'nextExpectedSequence'=> $nextExpectedSequence,
+            'scannedSequences'    => $scannedSequences,
         ];
+    }
+
+    /**
+     * Dapatkan maksimal 2 patrol point yang belum di-scan, 1 sebelum dan 1 sesudah sequence saat ini.
+     */
+    private function getNearbyUnscannedPoints($allPoints, array $scannedQrIds, int $currentSequence): array
+    {
+        $unscanned = $allPoints->filter(
+            fn($p) => ! ($p->qrCode && in_array($p->qrCode->id, $scannedQrIds))
+        );
+
+        $before = $unscanned->filter(fn($p) => $p->sequence_order < $currentSequence)->last();
+        $after  = $unscanned->filter(fn($p) => $p->sequence_order > $currentSequence)->first();
+
+        $result = [];
+        foreach ([$before, $after] as $p) {
+            if ($p) {
+                $result[] = [
+                    'id'             => $p->id,
+                    'name'           => $p->name,
+                    'sequence_order' => $p->sequence_order,
+                ];
+            }
+        }
+
+        // Jika kurang dari 2, isi dari unscanned terdekat lainnya
+        if (count($result) < 2) {
+            $resultIds = array_column($result, 'id');
+            foreach ($unscanned as $p) {
+                if (! in_array($p->id, $resultIds)) {
+                    $result[]   = ['id' => $p->id, 'name' => $p->name, 'sequence_order' => $p->sequence_order];
+                    $resultIds[] = $p->id;
+                    if (count($result) >= 2) break;
+                }
+            }
+        }
+
+        return array_values($result);
     }
 
     /**
@@ -310,6 +374,7 @@ class PatrolScanService
 
     /**
      * Create patrol scan with validation
+     * 🚀 Optimized for concurrency: Image processing moved outside DB transaction.
      */
     public function createScan(
         Attendance $attendance,
@@ -322,90 +387,74 @@ class PatrolScanService
         array $photoFiles = []
     ): array {
         try {
-            // Validate user can scan (gunakan scanTime dari device untuk validasi tanggal)
-            $userValidation = $this->canUserScan(
-                $attendance,
-                auth()->user(),
-                $scanTime instanceof \Carbon\Carbon ? $scanTime : null
-            );
-            if (! $userValidation['valid']) {
-                return [
-                    'success' => false,
-                    'errors' => $userValidation['errors'],
-                ];
+            // 0. Idempotency Check
+            $idempotencyKey = request()->header('X-Idempotency-Key');
+            if ($idempotencyKey) {
+                $lockKey = "idempotency:scan:{$idempotencyKey}";
+                if (!Redis::set($lockKey, 'processing', 'EX', 3600, 'NX')) {
+                    return ['success' => false, 'errors' => ['error' => 'Permintaan sedang diproses atau sudah berhasil.'], 'status_code' => 409];
+                }
             }
 
-            // Validate QR code
+            // 1. Validation Logic
+            $userValidation = $this->canUserScan($attendance, auth()->user(), $scanTime);
+            if (!$userValidation['valid']) return ['success' => false, 'errors' => $userValidation['errors']];
+
             $qrValidation = $this->validateQrCode($qrCode, $attendance);
-            if (! $qrValidation['valid']) {
-                return [
-                    'success' => false,
-                    'errors' => $qrValidation['errors'],
-                ];
-            }
+            if (!$qrValidation['valid']) return ['success' => false, 'errors' => $qrValidation['errors']];
 
             $qr = $qrValidation['qr'];
             $patrolPoint = $qr->patrolPoint;
 
-            // Validate sequence order (non-strict, warning saja bila tidak berurutan)
             $sequenceValidation = $this->validateSequenceOrder($attendance, $patrolPoint);
-            if (! $sequenceValidation['valid']) {
-                return [
-                    'success' => false,
-                    'errors' => $sequenceValidation['errors'],
-                ];
-            }
+            if (!$sequenceValidation['valid']) return ['success' => false, 'errors' => $sequenceValidation['errors'], 'already_scanned' => true];
 
-            // Validate location
-            $locationValidation = $this->validateLocation(
-                $attendance,
-                $patrolPoint,
-                $scanLatitude,
-                $scanLongitude,
-                $scanAltitude
-            );
-            if (! $locationValidation['valid']) {
-                return [
-                    'success' => false,
-                    'errors' => $locationValidation['errors'],
-                ];
-            }
-
-            // All validations passed, create the scan
-            DB::beginTransaction();
-
-            $scan = PatrolScan::create([
-                'attendance_id' => $attendance->id,
-                'qr_code_id' => $qr->id,
-                'scan_time' => $scanTime ?? now(),
-                'note' => $note,
-            ]);
-
-            // Enforce and store photos (required)
             if (count($photoFiles) < self::MIN_PHOTOS_PER_SCAN) {
-                throw new Exception('Minimal '.self::MIN_PHOTOS_PER_SCAN.' foto wajib diupload untuk setiap scan');
+                return ['success' => false, 'errors' => ['photos' => 'Minimal '.self::MIN_PHOTOS_PER_SCAN.' foto wajib diupload']];
             }
 
-            foreach ($photoFiles as $photoFile) {
-                $path = app(ImageWebpService::class)->storeAsWebp($photoFile, 'patrol-scan-photos', 80);
-                PatrolScanPhoto::create([
-                    'patrol_scan_id' => $scan->id,
-                    'photo' => $path,
-                ]);
+            // 2. Offload Image Processing (Store Temp Files)
+            $tempPaths = [];
+            foreach ($photoFiles as $file) {
+                $tempPaths[] = $file->store('temp/patrol-scans', 'public');
             }
 
-            DB::commit();
+            // 3. Database Operations (MINIMAL) with Duplicate Protection
+            try {
+                $scan = DB::transaction(function () use ($attendance, $qr, $scanTime, $note) {
+                    return PatrolScan::create([
+                        'attendance_id' => $attendance->id,
+                        'qr_code_id' => $qr->id,
+                        'scan_time' => $scanTime ?? now(),
+                        'note' => $note,
+                    ]);
+                });
+            } catch (\Illuminate\Database\QueryException $e) {
+                // 1062 = Duplicate entry
+                if ($e->getCode() == '23000' || str_contains($e->getMessage(), '1062')) {
+                    return [
+                        'success' => false, 
+                        'errors' => ['error' => 'Titik ini sudah pernah di-scan.'], 
+                        'status_code' => 409
+                    ];
+                }
+                throw $e;
+            }
+
+            // 4. Redis Progress Increment & Async Work (with fallback)
+            $this->incrementRedisProgress($attendance->id);
+            
+            ProcessPatrolScanPhotos::dispatch($scan, $tempPaths);
+            RebuildProjectReportCache::dispatch($attendance->project_id);
 
             return [
                 'success' => true,
                 'scan' => $scan,
                 'patrolPoint' => $patrolPoint,
-                'message' => "Scan '{$patrolPoint->name}' berhasil dicatat ({$sequenceValidation['nextExpectedSequence']}/{$attendance->getPatrolPoints()->count()})",
-                'warnings' => $sequenceValidation['warnings'] ?? [],
+                'message' => "Scan '{$patrolPoint->name}' berhasil dicatat",
+                'progress' => $this->getScanProgress($attendance)
             ];
         } catch (Exception $e) {
-            DB::rollBack();
-
             return [
                 'success' => false,
                 'errors' => ['error' => $e->getMessage()],
@@ -435,6 +484,12 @@ class PatrolScanService
                 'photo' => $path,
             ]);
 
+            // Batalkan cache laporan project ini dengan update versi
+            // nanti coba pake tags
+            if ($scan->attendance) {
+                Cache::forever('project_reports_'.$scan->attendance->project_id.'_v', time());
+            }
+
             return [
                 'success' => true,
                 'photo' => $photo,
@@ -447,23 +502,139 @@ class PatrolScanService
             ];
         }
     }
-
     /**
-     * Get scan progress for attendance
+     * Get scan progress if no attendance
+     * 
      */
-    public function getScanProgress(Attendance $attendance): array
+
+     public function getProgressByPost(int $postId, ?Attendance $attendance = null): array
+     {
+         // 🔹 Ambil semua patrol point di post
+         $totalPoints = \App\Models\PatrolPoint::where('post_id', $postId)->count();
+     
+         // 🔹 Default (belum scan)
+         $scanCount = 0;
+     
+         // 🔥 Kalau ada attendance → pakai existing logic
+         if ($attendance) {
+             return $this->getScanProgress($attendance);
+         }
+     
+         return [
+             'total' => $totalPoints,
+             'scanned' => $scanCount,
+             'remaining' => $totalPoints - $scanCount,
+             'percentage' => $totalPoints > 0 ? round(($scanCount / $totalPoints) * 100, 2) : 0,
+             'completed' => $scanCount === $totalPoints,
+         ];
+     }
+     
+    /**
+     * Get merged scan progress for multiple attendances at a specific post
+     */
+    public function getMergedScanProgress(\Illuminate\Support\Collection $attendances, int $postId): array
     {
-        $allPoints = $attendance->getPatrolPoints();
-        $scanCount = $attendance->patrolScans()->count();
-        $totalPoints = $allPoints->count();
+        $totalPoints = \App\Models\PatrolPoint::where('post_id', $postId)->count();
+        $attendanceIds = $attendances->pluck('id')->toArray();
+
+        // Hitung distinct qr_code_id yang discan oleh gabungan attendance di post tsb
+        $scanCount = \App\Models\PatrolScan::whereIn('attendance_id', $attendanceIds)
+            ->distinct('qr_code_id')
+            ->count('qr_code_id');
 
         return [
             'total' => $totalPoints,
             'scanned' => $scanCount,
-            'remaining' => $totalPoints - $scanCount,
+            'remaining' => max(0, $totalPoints - $scanCount),
             'percentage' => $totalPoints > 0 ? round(($scanCount / $totalPoints) * 100, 2) : 0,
-            'completed' => $scanCount === $totalPoints,
+            'completed' => $scanCount >= $totalPoints,
         ];
+    }
+
+    /**
+     * Get merged scan progress for all commanders at a specific project
+     */
+    public function getMergedCommanderProgress(\App\Models\Project $project, \Illuminate\Support\Collection $attendances): array
+    {
+        // Commander: QR boleh dari patrol point manapun yang berada di pos STATIC dalam project
+        $staticPostIds = $project->posts()
+            ->where('type', 'static')
+            ->pluck('id')
+            ->all();
+
+        $totalPoints = \App\Models\PatrolPoint::whereIn('post_id', $staticPostIds)->count();
+
+        if ($attendances->isEmpty()) {
+            return [
+                'total' => $totalPoints,
+                'scanned' => 0,
+                'remaining' => $totalPoints,
+                'percentage' => 0,
+                'completed' => false,
+            ];
+        }
+
+        $attendanceIds = $attendances->pluck('id')->toArray();
+
+        // Hitung distinct qr_code_id yang discan oleh gabungan commander di project tsb
+        $scanCount = \App\Models\PatrolScan::whereIn('attendance_id', $attendanceIds)
+            ->distinct('qr_code_id')
+            ->count('qr_code_id');
+
+        return [
+            'total' => $totalPoints,
+            'scanned' => $scanCount,
+            'remaining' => max(0, $totalPoints - $scanCount),
+            'percentage' => $totalPoints > 0 ? round(($scanCount / $totalPoints) * 100, 2) : 0,
+            'completed' => $totalPoints > 0 && $scanCount >= $totalPoints,
+        ];
+    }
+
+    /**
+     * Get scan progress for attendance (Optimized with Redis + Fallback)
+     */
+    public function getScanProgress(Attendance $attendance): array
+    {
+        $redisKey = "patrol:progress:{$attendance->id}";
+        $scanCount = null;
+
+        try {
+            $scanCount = Redis::get($redisKey);
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Redis unavailable: " . $e->getMessage());
+        }
+
+        if ($scanCount === null) {
+            // Rebuild from DB if Redis is missing key OR Redis is down
+            $scanCount = $attendance->patrolScans()->count();
+            
+            try {
+                Redis::setex($redisKey, 86400, $scanCount); // Cache for 24h
+            } catch (\Throwable $e) {}
+        }
+
+        $allPoints = $attendance->getPatrolPoints();
+        $totalPoints = $allPoints->count();
+
+        return [
+            'total' => (int) $totalPoints,
+            'scanned' => (int) $scanCount,
+            'remaining' => max(0, $totalPoints - $scanCount),
+            'percentage' => $totalPoints > 0 ? round(($scanCount / $totalPoints) * 100, 2) : 0,
+            'completed' => (int)$scanCount >= (int)$totalPoints,
+        ];
+    }
+
+    private function incrementRedisProgress(int $attendanceId): void
+    {
+        try {
+            $redisKey = "patrol:progress:{$attendanceId}";
+            if (Redis::exists($redisKey)) {
+                Redis::incr($redisKey);
+            }
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning("Redis increment failed: " . $e->getMessage());
+        }
     }
 
     /**

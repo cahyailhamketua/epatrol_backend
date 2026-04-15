@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
+use App\Support\SignedMediaUrl;
 
 class User extends Authenticatable
 {
@@ -37,6 +38,15 @@ class User extends Authenticatable
         'join_date',
         'active',
     ];
+
+    protected $appends = ['avatar_url'];
+
+public function getAvatarUrlAttribute()
+{
+    return $this->avatar
+        ? \App\Support\SignedMediaUrl::userAvatar($this)
+        : null;
+}
 
     /**
      * The attributes that should be hidden for serialization.

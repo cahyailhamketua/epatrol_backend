@@ -22,6 +22,10 @@ class Schedule extends Model
         'date',
     ];
 
+    // protected $casts = [
+    //     'date' => 'date',
+    // ];
+
     public function project()
     {
         return $this->belongsTo(Project::class);

@@ -7,13 +7,22 @@ use App\Models\Post;
 use App\Models\PatrolPoint;
 use App\Models\PatrolScan;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
+use App\Services\QrCardImageService;
 use SimpleSoftwareIO\QrCode\Facades\QrCode;
 
 class PatrolPointController extends Controller
 {
+    private const PATROL_POINT_CACHE_TTL_SECONDS = 300;
+
+    public function __construct(private readonly QrCardImageService $qrCardImageService)
+    {
+    }   
+
     /**
      * CREATE PATROL POINT
      * POST /posts/{post}/patrol-points
@@ -102,6 +111,7 @@ class PatrolPointController extends Controller
                 'active' => true,
             ]);
         });
+        $this->bumpPatrolPointCacheVersion();
 
         return response()->json([
             'success' => true,
@@ -138,24 +148,43 @@ class PatrolPointController extends Controller
     public function indexByPost(Request $request, Post $post)
     {
         $this->authorize('view', $post);
+        $post->loadMissing('project.organization');
+        $cacheVersion = $this->getPatrolPointCacheVersion();
+        $cacheKey = sprintf('patrol-points:post:%d:v:%d', $post->id, $cacheVersion);
 
-        $points = $post->patrolPoints()
-            ->with('qrCode')
-            ->orderBy('sequence_order')
-            ->get();
+        $points = Cache::remember(
+            $cacheKey,
+            now()->addSeconds(self::PATROL_POINT_CACHE_TTL_SECONDS),
+            function () use ($post) {
+                $result = $post->patrolPoints()
+                    ->select(
+                        'id',
+                        'post_id',
+                        'name',
+                        'sequence_order',
+                        'latitude',
+                        'longitude',
+                        'altitude',
+                        'radius'
+                    )
+                    ->with(['qrCode' => fn($q) => $q->select('id', 'patrol_point_id', 'code', 'active')])
+                    ->orderBy('sequence_order')
+                    ->get();
 
-        $points->transform(function ($patrolPoint) {
-            if ($patrolPoint->qrCode) {
-                $qrCode = QrCode::format('svg')
-                    ->size(200)
-                    ->generate($patrolPoint->qrCode->code);
-                $patrolPoint->qr_code_image = 'data:image/svg+xml;base64,' . base64_encode($qrCode);
-            } else {
-                $patrolPoint->qr_code_image = null;
+                $result->transform(function ($patrolPoint) use ($post) {
+                    if ($patrolPoint->qrCode) {
+                        $patrolPoint->setRelation('post', $post);
+                        $patrolPoint->qr_code_image = $this->buildQrCardDataUri($patrolPoint);
+                    } else {
+                        $patrolPoint->qr_code_image = null;
+                    }
+
+                    return $patrolPoint;
+                });
+
+                return $result;
             }
-
-            return $patrolPoint;
-        });
+        );
 
         return response()->json([
             'data' => $points,
@@ -175,40 +204,58 @@ class PatrolPointController extends Controller
     public function show(PatrolPoint $patrolPoint)
     {
         $this->authorize('view', $patrolPoint);
+        $cacheVersion = $this->getPatrolPointCacheVersion();
+        $cacheKey = sprintf('patrol-points:show:%d:v:%d', $patrolPoint->id, $cacheVersion);
+        $payload = Cache::remember(
+            $cacheKey,
+            now()->addSeconds(self::PATROL_POINT_CACHE_TTL_SECONDS),
+            function () use ($patrolPoint) {
+                $patrolPoint->load(['activeQrCode', 'post.project.organization']);
+                $patrolPoint->setRelation('qrCode', $patrolPoint->activeQrCode);
+                unset($patrolPoint->activeQrCode);
+                $post = $patrolPoint->post;
+                $pointData = $patrolPoint->toArray();
+                $pointData['qr_code_image'] = $patrolPoint->qrCode
+                    ? $this->buildQrCardDataUri($patrolPoint)
+                    : null;
+                $rel = $patrolPoint->qrCode ? $this->qrCardImageService->ensurePublicWebpForPatrolPoint($patrolPoint) : null;
+                $pointData['qr_image'] = $rel ? url('/storage/'.$rel) : null;
 
-        $post = $patrolPoint->post;
+                return [
+                    'patrol_point' => $pointData,
+                    'post_context' => [
+                        'id' => $post->id,
+                        'name' => $post->name,
+                        'type' => $post->type,
+                        'type_description' => $post->type === 'static'
+                            ? 'Static Point - Untuk Komandan Regu (max 1 point per post)'
+                            : 'Mobile Point - Untuk Anggota (multiple points dengan sequence)',
+                    ],
+                    'scanning_info' => [
+                        'sequence_order' => $patrolPoint->sequence_order,
+                        'total_points_in_post' => $post->patrolPoints()->count(),
+                        'coordinates' => [
+                            'latitude' => $patrolPoint->latitude,
+                            'longitude' => $patrolPoint->longitude,
+                            'altitude' => $patrolPoint->altitude,
+                        ],
+                        'validation_distance_radius' => $patrolPoint->radius . ' km',
+                        'altitude_tolerance' => '±50 meters (from patrol point altitude)',
+                    ],
+                    'qr_code' => [
+                        'id' => $patrolPoint->qrCode->id,
+                        'code' => $patrolPoint->qrCode->code,
+                        'active' => $patrolPoint->qrCode->active,
+                        'scannable' => $patrolPoint->qrCode->active,
+                        'image_url' => url('/api/qr-codes/' . $patrolPoint->qrCode->id . '/image'),
+                    ],
+                ];
+            }
+        );
         
         return response()->json([
             'success' => true,
-            'data' => [
-                'patrol_point' => $patrolPoint->load('qrCode')->toArray(),
-                'post_context' => [
-                    'id' => $post->id,
-                    'name' => $post->name,
-                    'type' => $post->type,
-                    'type_description' => $post->type === 'static' 
-                        ? 'Static Point - Untuk Komandan Regu (max 1 point per post)' 
-                        : 'Mobile Point - Untuk Anggota (multiple points dengan sequence)',
-                ],
-                'scanning_info' => [
-                    'sequence_order' => $patrolPoint->sequence_order,
-                    'total_points_in_post' => $post->patrolPoints()->count(),
-                    'coordinates' => [
-                        'latitude' => $patrolPoint->latitude,
-                        'longitude' => $patrolPoint->longitude,
-                        'altitude' => $patrolPoint->altitude,
-                    ],
-                    'validation_distance_radius' => $patrolPoint->radius . ' km',
-                    'altitude_tolerance' => '±50 meters (from patrol point altitude)',
-                ],
-                'qr_code' => [
-                    'id' => $patrolPoint->qrCode->id,
-                    'code' => $patrolPoint->qrCode->code,
-                    'active' => $patrolPoint->qrCode->active,
-                    'scannable' => $patrolPoint->qrCode->active,
-                    'image_url' => url('/api/qr-codes/' . $patrolPoint->qrCode->id . '/image'),
-                ],
-            ],
+            'data' => $payload,
         ]);
     }
 
@@ -273,6 +320,7 @@ class PatrolPointController extends Controller
                 ]);
             }
         });
+        $this->bumpPatrolPointCacheVersion();
 
         return response()->json([
             'success' => true,
@@ -323,6 +371,7 @@ class PatrolPointController extends Controller
             $patrolPoint->qrCode()?->delete();
             $patrolPoint->delete();
         });
+        $this->bumpPatrolPointCacheVersion();
 
         return response()->json([
             'success' => true,
@@ -335,5 +384,172 @@ class PatrolPointController extends Controller
                 ],
             ],
         ]);
+    }
+
+    private function patrolPointVersionCacheKey(): string
+    {
+        return 'patrol-points:cache:version';
+    }
+
+    private function getPatrolPointCacheVersion(): int
+    {
+        return (int) Cache::rememberForever($this->patrolPointVersionCacheKey(), fn() => 1);
+    }
+
+    private function bumpPatrolPointCacheVersion(): void
+    {
+        $versionKey = $this->patrolPointVersionCacheKey();
+        if (! Cache::has($versionKey)) {
+            Cache::forever($versionKey, 1);
+        }
+        Cache::increment($versionKey);
+    }
+
+    private function buildQrCardDataUri(PatrolPoint $patrolPoint): string
+    {
+        $post = $patrolPoint->post;
+        $project = $post?->project;
+        $organization = $project?->organization;
+
+        $qrSvg = QrCode::format('svg')->size(280)->margin(1)->generate($patrolPoint->qrCode->code);
+        $qrDataUri = 'data:image/svg+xml;base64,'.base64_encode($qrSvg);
+        $logoDataUri = $this->organizationLogoDataUri($organization?->logo);
+
+        $orgName = strtoupper((string) ($organization?->name ?? 'ORGANIZATION'));
+        $postName = strtoupper((string) ($post?->name ?? '-'));
+        $projectName = strtoupper((string) ($project?->name ?? '-'));
+        $pointName = strtoupper((string) ($patrolPoint->name ?? '-'));
+
+        $logoSvg = $logoDataUri
+            ? '<image href="'.$logoDataUri.'" x="205" y="30" width="110" height="110" preserveAspectRatio="xMidYMid meet" />'
+            : '<rect x="205" y="30" width="110" height="110" fill="#f1f5f9" stroke="#cbd5e1" />';
+
+        $cardSvg = <<<SVG
+<svg xmlns="http://www.w3.org/2000/svg" width="520" height="860" viewBox="0 0 520 860">
+  <rect x="0" y="0" width="520" height="860" fill="#ffffff"/>
+  {$logoSvg}
+  {$this->buildMultilineTextSvg($orgName, 185, 42, 700, 22, 50, 2)}
+
+  <rect x="90" y="270" width="340" height="340" fill="#ffffff" stroke="#111111" stroke-width="4"/>
+  <image href="{$qrDataUri}" x="110" y="290" width="300" height="300" preserveAspectRatio="xMidYMid meet"/>
+
+  {$this->buildMultilineTextSvg($postName, 665, 40, 700, 20, 46, 2)}
+  {$this->buildMultilineTextSvg($projectName, 760, 38, 700, 22, 42, 2)}
+  {$this->buildMultilineTextSvg($pointName, 830, 34, 500, 24, 38, 1)}
+</svg>
+SVG;
+
+        return 'data:image/svg+xml;base64,'.base64_encode($cardSvg);
+    }
+
+    private function organizationLogoDataUri(?string $logoPath): ?string
+    {
+        if (! $logoPath) {
+            return null;
+        }
+
+        if (str_starts_with($logoPath, 'data:image/')) {
+            return $logoPath;
+        }
+
+        if (str_starts_with($logoPath, 'http://') || str_starts_with($logoPath, 'https://')) {
+            return $this->xmlEscape($logoPath);
+        }
+
+        if (! Storage::disk('public')->exists($logoPath)) {
+            return null;
+        }
+
+        $raw = Storage::disk('public')->get($logoPath);
+        $mime = Storage::disk('public')->mimeType($logoPath) ?: 'image/png';
+
+        return 'data:'.$mime.';base64,'.base64_encode($raw);
+    }
+
+    private function xmlEscape(string $value): string
+    {
+        return htmlspecialchars($value, ENT_QUOTES | ENT_XML1, 'UTF-8');
+    }
+
+    private function buildMultilineTextSvg(
+        string $text,
+        int $startY,
+        int $fontSize,
+        int $fontWeight,
+        int $maxCharsPerLine,
+        int $lineHeight,
+        int $maxLines
+    ): string {
+        $lines = $this->splitTextToLines($text, $maxCharsPerLine, $maxLines);
+        $svg = '';
+
+        foreach ($lines as $index => $line) {
+            $y = $startY + ($index * $lineHeight);
+            $svg .= '<text x="260" y="'.$y.'" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="'.$fontSize.'" font-weight="'.$fontWeight.'" fill="#111111">'.$this->xmlEscape($line).'</text>';
+        }
+
+        return $svg;
+    }
+
+    private function splitTextToLines(string $text, int $maxCharsPerLine, int $maxLines): array
+    {
+        $normalized = trim(preg_replace('/\s+/', ' ', $text) ?? '');
+        if ($normalized === '') {
+            return ['-'];
+        }
+
+        $words = explode(' ', $normalized);
+        $lines = [];
+        $current = '';
+
+        $totalWords = count($words);
+        for ($i = 0; $i < $totalWords; $i++) {
+            $word = $words[$i];
+            $candidate = $current === '' ? $word : $current.' '.$word;
+            if (mb_strlen($candidate) <= $maxCharsPerLine) {
+                $current = $candidate;
+                continue;
+            }
+
+            if ($current !== '') {
+                $lines[] = $current;
+            } else {
+                $lines[] = mb_substr($word, 0, $maxCharsPerLine);
+                $word = mb_substr($word, $maxCharsPerLine);
+            }
+
+            if (count($lines) >= $maxLines - 1) {
+                $remainingParts = [];
+                if ($word !== '') {
+                    $remainingParts[] = $word;
+                }
+                if ($i + 1 < $totalWords) {
+                    $remainingParts[] = implode(' ', array_slice($words, $i + 1));
+                }
+                $lines[] = $this->truncateWithEllipsis(trim(implode(' ', $remainingParts)), $maxCharsPerLine);
+                return $lines;
+            }
+
+            $current = $word;
+        }
+
+        if ($current !== '' && count($lines) < $maxLines) {
+            $lines[] = $current;
+        }
+
+        if (count($lines) > $maxLines) {
+            $lines = array_slice($lines, 0, $maxLines);
+        }
+
+        return $lines;
+    }
+
+    private function truncateWithEllipsis(string $text, int $maxChars): string
+    {
+        if (mb_strlen($text) <= $maxChars) {
+            return $text;
+        }
+
+        return rtrim(mb_substr($text, 0, max(1, $maxChars - 1))).'…';
     }
 }

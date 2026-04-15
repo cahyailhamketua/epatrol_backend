@@ -30,6 +30,13 @@ class PatrolPoint extends Model
         return $this->hasOne(QrCode::class);
     }
 
+    public function activeQrCode()
+    {
+        return $this->hasOne(QrCode::class)
+            ->where('active', true)
+            ->latestOfMany();
+    }
+
     protected static function booted()
     {
         static::created(function (PatrolPoint $point) {

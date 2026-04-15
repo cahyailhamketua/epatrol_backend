@@ -9,11 +9,12 @@ use App\Models\Organization;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use App\Support\SignedMediaUrl;
 
 class ProjectController extends Controller
 {
     /**
-     * LIST PROJECT (PAGINATION + FILTER)
+     * LIST PROJECT (FILTER, tanpa pagination)
      */
     public function index(Request $request)
     {
@@ -45,9 +46,11 @@ class ProjectController extends Controller
             )
 
             ->orderBy('name')
-            ->paginate($request->get('per_page', 15));
+            ->get();
 
-        return response()->json($projects);
+        return response()->json([
+            'data' => $projects,
+        ]);
     }
 
 
@@ -170,32 +173,51 @@ class ProjectController extends Controller
      /**
      * USER BY PROJECT
      */
-    public function users(Project $project, Request $request)
-    {
-        $this->authorize('view', $project);
+ public function users(Project $project, Request $request)
+{
+    $this->authorize('view', $project);
 
-        $auth = $request->user();
+    $auth = $request->user();
 
-        $users = $project->users()
-            ->select(
-                'id',
-                'full_name',
-                'username',
-                'email',
-                'role',
-                'project_id',
-                'organization_id',
-                'active'
-            )
-            ->when($auth->role !== 'dev', function ($q) {
-                // 🔐 selain dev hanya boleh lihat user aktif
-                $q->where('active', true);
-            })
-            ->orderBy('full_name')
-            ->paginate($request->get('per_page', 15));
+    $users = $project->users()
+        ->select(
+            'id',
+            'full_name',
+            'username',
+            'email',
+            'role',
+            'project_id',
+            'organization_id',
+            'active',
+            'avatar' // wajib diambil
+        )
+        ->when($auth->role !== 'dev', function ($q) {
+            // 🔐 selain dev hanya boleh lihat user aktif
+            $q->where('active', true);
+        })
+        ->get()
+        ->map(function ($user) {
+            return [
+                'id' => $user->id,
+                'full_name' => $user->full_name,
+                'username' => $user->username,
+                'email' => $user->email,
+                'role' => $user->role,
+                'project_id' => $user->project_id,
+                'organization_id' => $user->organization_id,
+                'active' => $user->active,
+                'avatar_url' => $user->avatar
+                    ? SignedMediaUrl::userAvatar($user)
+                    : null,
+            ];
+        });
 
-        return response()->json($users);
-    }
+    return response()->json([
+        'success' => true,
+        'message' => 'List user pada project berhasil diambil',
+        'data' => $users,
+    ]);
+}
 
     /**
      * Project by Organization
@@ -213,8 +235,10 @@ class ProjectController extends Controller
                 $q->where('name', 'like', '%' . $request->search . '%')
             )
             ->orderBy('name')
-            ->paginate($request->get('per_page', 15));
+            ->get();
 
-        return response()->json($projects);
+        return response()->json([
+            'data' => $projects,
+        ]);
     }
 }

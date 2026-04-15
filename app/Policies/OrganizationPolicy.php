@@ -9,14 +9,12 @@ class OrganizationPolicy
 {
     public function viewAny(User $user): bool
     {
-        //return true; // semua user boleh lihat
-        return $user->role === 'dev';
+        return in_array($user->role, ['dev', 'ho', 'admin_project']);
     }
 
-    public function view(User $user, Organization $org): bool
+    public function view(User $user): bool
     {
-        //return true;
-        return $user->role === 'dev';
+        return in_array($user->role, ['dev', 'ho', 'admin_project']);
     }
 
     public function create(User $user): bool

@@ -13,6 +13,8 @@ use App\Http\Controllers\Api\PatrolScanController;
 use App\Http\Controllers\Api\PayrollController;
 use App\Http\Controllers\Api\PostController;
 use App\Http\Controllers\Api\ProjectController;
+use App\Http\Controllers\Api\ProjectReportController;
+use App\Http\Controllers\Api\ProjectReportExportController;
 use App\Http\Controllers\Api\QrCodeController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\ShiftController;
@@ -75,6 +77,22 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/projects/{project}/activate', [ProjectController::class, 'activate']);
     // user by project
     Route::get('/projects/{project}/users', [ProjectController::class, 'users']);
+
+    // Laporan dashboard (kehadiran, patrol danru, patrol pos, gabungan)
+    Route::get('/projects/{project}/reports/attendance', [ProjectReportController::class, 'attendanceReport']);
+    Route::get('/projects/{project}/reports/patrol-danru', [ProjectReportController::class, 'patrolDanruReport']);
+    Route::get('/projects/{project}/reports/patrol-pos', [ProjectReportController::class, 'patrolPosReport']);
+    Route::get('/projects/{project}/reports/all', [ProjectReportController::class, 'allReports']);
+
+    // Unduh laporan (Excel / PDF) — filter sama seperti JSON; query `limit` opsional (max 5000)
+    Route::get('/projects/{project}/reports/attendance/export/excel', [ProjectReportExportController::class, 'exportAttendanceExcel']);
+    Route::get('/projects/{project}/reports/attendance/export/pdf', [ProjectReportExportController::class, 'exportAttendancePdf']);
+    Route::get('/projects/{project}/reports/patrol-danru/export/excel', [ProjectReportExportController::class, 'exportPatrolDanruExcel']);
+    Route::get('/projects/{project}/reports/patrol-danru/export/pdf', [ProjectReportExportController::class, 'exportPatrolDanruPdf']);
+    Route::get('/projects/{project}/reports/patrol-pos/export/excel', [ProjectReportExportController::class, 'exportPatrolPosExcel']);
+    Route::get('/projects/{project}/reports/patrol-pos/export/pdf', [ProjectReportExportController::class, 'exportPatrolPosPdf']);
+    Route::get('/projects/{project}/reports/all/export/excel', [ProjectReportExportController::class, 'exportAllExcel']);
+    Route::get('/projects/{project}/reports/all/export/pdf', [ProjectReportExportController::class, 'exportAllPdf']);
     // teams by project
     Route::get('/projects/{project}/teams', [TeamController::class, 'indexByProject']);
     Route::post('/projects/{project}/teams', [TeamController::class, 'store']);
@@ -121,6 +139,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('/posts/by-type/{type}', [PostController::class, 'byType']);
     Route::get('/posts', [PostController::class, 'index']);
     Route::get('/posts/{post}', [PostController::class, 'show']);
+    Route::post('/posts/{post}/patrol-points/regenerate-qr', [PostController::class, 'regenerateQrForPost']);
     Route::put('/posts/{post}', [PostController::class, 'update']);
     Route::delete('/posts/{post}', [PostController::class, 'destroy']);
 
@@ -254,6 +273,9 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // View attendance detail
     Route::get('/attendances/{attendance}', [AttendanceController::class, 'show']);
+
+    // Foto selfie absensi (inline, Bearer token)
+    Route::get('/attendances/{attendance}/selfie-inline', [AttendanceController::class, 'inlineSelfiePhoto']);
 });
 
 // Absence routes
@@ -317,4 +339,7 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Download photo
     Route::get('/patrol-scan-photo/{photoId}/download', [PatrolScanController::class, 'downloadPhoto']);
+
+    // Patrol photo inline (Bearer token)
+    Route::get('/patrol-scan-photo/{photoId}/inline', [PatrolScanController::class, 'inlinePhoto']);
 });

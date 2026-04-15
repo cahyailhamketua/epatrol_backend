@@ -11,3 +11,4 @@ class QrCodeService
         return strtoupper(Str::uuid()->toString());
     }
 }
+

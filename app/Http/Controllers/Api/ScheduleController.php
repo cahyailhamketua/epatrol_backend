@@ -13,6 +13,7 @@ use App\Models\TemplateSchedule;
 use App\Services\ScheduleGeneratorService;
 use App\Services\ScheduleSheetService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Validation\ValidationException;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
@@ -23,6 +24,8 @@ use PhpOffice\PhpSpreadsheet\Style\Fill;
 
 class ScheduleController extends Controller
 {
+    private const SHEET_CACHE_TTL_SECONDS = 300;
+
     /**
      * LIST ALL SCHEDULES (WITH FILTERING)
      * GET /schedules
@@ -234,6 +237,7 @@ class ScheduleController extends Controller
         $validated['project_id'] = $project->id;
         $schedule = Schedule::create($validated);
         $schedule->load(['project', 'user', 'assignment']);
+        $this->bumpScheduleSheetCacheVersion($project->id);
 
         return response()->json([
             'message' => 'Schedule created successfully',
@@ -332,6 +336,10 @@ class ScheduleController extends Controller
             }
         }
 
+        if (count($created) > 0) {
+            $this->bumpScheduleSheetCacheVersion($project->id);
+        }
+
         return response()->json([
             'message' => 'Bulk schedule creation completed',
             'created' => count($created),
@@ -416,6 +424,7 @@ class ScheduleController extends Controller
 
         $schedule->update($validated);
         $schedule->load(['project', 'user', 'assignment']);
+        $this->bumpScheduleSheetCacheVersion($schedule->project_id);
 
         return response()->json([
             'message' => 'Schedule updated successfully',
@@ -431,7 +440,9 @@ class ScheduleController extends Controller
     {
         $this->authorize('manage', [Schedule::class, $schedule->project]);
 
+        $projectId = $schedule->project_id;
         $schedule->delete();
+        $this->bumpScheduleSheetCacheVersion($projectId);
 
         return response()->json([
             'message' => 'Schedule deleted successfully',
@@ -456,7 +467,15 @@ class ScheduleController extends Controller
             'ids.*' => 'integer|exists:schedules,id',
         ]);
 
+        $projectIds = Schedule::query()
+            ->whereIn('id', $validated['ids'])
+            ->distinct()
+            ->pluck('project_id');
+
         Schedule::whereIn('id', $validated['ids'])->delete();
+        foreach ($projectIds as $projectId) {
+            $this->bumpScheduleSheetCacheVersion((int) $projectId);
+        }
 
         return response()->json([
             'message' => 'Schedules deleted successfully',
@@ -479,37 +498,46 @@ class ScheduleController extends Controller
             'team_id' => 'nullable|exists:teams,id',
         ]);
 
-        $service = new ScheduleSheetService();
-
-        $data = $service->generate($project->id, $month);
-
-        // Optional filter by team_id at response level
         $teamId = $request->query('team_id');
-        if ($teamId) {
-            $data['rows'] = collect($data['rows'])
-                ->filter(function ($row) use ($teamId) {
-                    return isset($row['user']['team_id']) && $row['user']['team_id'] == $teamId;
-                })
-                ->values()
-                ->all();
-        }
+        $cacheVersion = $this->getScheduleSheetCacheVersion($project->id);
+        $cacheKey = $this->scheduleSheetCacheKey($project->id, $month, $teamId, $cacheVersion);
 
-        // Meta days (list tanggal & nama hari) untuk header grid
-        $startDate = $data['meta']['start_date'];
-        $endDate = $data['meta']['end_date'];
+        $data = Cache::remember(
+            $cacheKey,
+            now()->addSeconds(self::SHEET_CACHE_TTL_SECONDS),
+            function () use ($project, $month, $teamId) {
+                $service = new ScheduleSheetService();
+                $sheetData = $service->generate($project->id, $month);
 
-        $days = [];
-        $current = \Carbon\Carbon::parse($startDate)->copy();
-        $end = \Carbon\Carbon::parse($endDate)->copy();
-        while ($current->lessThanOrEqualTo($end)) {
-            $days[] = [
-                'date' => $current->format('Y-m-d'),
-                'day_name' => $current->translatedFormat('l'),
-            ];
-            $current->addDay();
-        }
+                if ($teamId) {
+                    $sheetData['rows'] = collect($sheetData['rows'])
+                        ->filter(function ($row) use ($teamId) {
+                            return isset($row['user']['team_id']) && $row['user']['team_id'] == $teamId;
+                        })
+                        ->values()
+                        ->all();
+                }
 
-        $data['meta']['days'] = $days;
+                // Meta days (list tanggal & nama hari) untuk header grid
+                $startDate = $sheetData['meta']['start_date'];
+                $endDate = $sheetData['meta']['end_date'];
+
+                $days = [];
+                $current = \Carbon\Carbon::parse($startDate)->copy();
+                $end = \Carbon\Carbon::parse($endDate)->copy();
+                while ($current->lessThanOrEqualTo($end)) {
+                    $days[] = [
+                        'date' => $current->format('Y-m-d'),
+                        'day_name' => $current->translatedFormat('l'),
+                    ];
+                    $current->addDay();
+                }
+
+                $sheetData['meta']['days'] = $days;
+
+                return $sheetData;
+            }
+        );
 
         return response()->json($data);
     }
@@ -777,6 +805,7 @@ class ScheduleController extends Controller
             $team->id,
             $validated['pattern']
         );
+        $this->bumpScheduleSheetCacheVersion($project->id);
 
         return response()->json([
             'message' => 'Schedule generated successfully for team.',
@@ -849,6 +878,7 @@ class ScheduleController extends Controller
                 'start_date' => $startDate,
             ]
         );
+        $this->bumpScheduleSheetCacheVersion($project->id);
 
         return response()->json([
             'message' => 'Team schedule template saved successfully.',
@@ -1044,6 +1074,7 @@ class ScheduleController extends Controller
             $dayIndex++;
             $current->addDay();
         }
+        $this->bumpScheduleSheetCacheVersion($project->id);
 
         return response()->json([
             'message' => 'Schedule generated from template pattern successfully for team.',
@@ -1078,6 +1109,9 @@ class ScheduleController extends Controller
             ->where('team_id', $team->id)
             ->whereBetween('date', [$startDate, $endDate])
             ->delete();
+        if ($deleted > 0) {
+            $this->bumpScheduleSheetCacheVersion($project->id);
+        }
 
         return response()->json([
             'message' => 'Team schedules deleted successfully.',
@@ -1119,6 +1153,7 @@ class ScheduleController extends Controller
         }
 
         $schedule->update($updateData);
+        $this->bumpScheduleSheetCacheVersion($schedule->project_id);
 
         return response()->json([
             'message' => 'Schedule updated successfully',
@@ -1213,9 +1248,45 @@ class ScheduleController extends Controller
                 ]
             );
         }
+        $this->bumpScheduleSheetCacheVersion($team->project_id);
 
         return response()->json([
             'message' => 'Team member added and schedule copied from leader.',
         ]);
+    }
+
+    private function scheduleSheetVersionKey(int $projectId): string
+    {
+        return "schedule_sheet:project:{$projectId}:version";
+    }
+
+    private function getScheduleSheetCacheVersion(int $projectId): int
+    {
+        return (int) Cache::rememberForever(
+            $this->scheduleSheetVersionKey($projectId),
+            fn() => 1
+        );
+    }
+
+    private function bumpScheduleSheetCacheVersion(int $projectId): void
+    {
+        $versionKey = $this->scheduleSheetVersionKey($projectId);
+        if (! Cache::has($versionKey)) {
+            Cache::forever($versionKey, 1);
+        }
+        Cache::increment($versionKey);
+    }
+
+    private function scheduleSheetCacheKey(int $projectId, string $month, ?string $teamId, int $version): string
+    {
+        $team = $teamId ?: 'all';
+
+        return sprintf(
+            'schedule_sheet:project:%d:month:%s:team:%s:v:%d',
+            $projectId,
+            $month,
+            $team,
+            $version
+        );
     }
 }

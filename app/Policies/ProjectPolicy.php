@@ -2,9 +2,9 @@
 
 namespace App\Policies;
 
-use App\Models\User;
-use App\Models\Project;
 use App\Models\Organization;
+use App\Models\Project;
+use App\Models\User;
 
 class ProjectPolicy
 {
@@ -13,7 +13,7 @@ class ProjectPolicy
         return true;
     }
 
-    public function view(User $user, Project $project,): bool
+    public function view(User $user, Project $project): bool
     {
         // DEV bisa lihat semua
         if ($user->role === 'dev') {
@@ -24,12 +24,17 @@ class ProjectPolicy
         if ($user->role === 'ho') {
             return $user->organization_id === $project->organization_id;
         }
-            
+
         // Admin project hanya project miliknya
         if ($user->role === 'admin_project') {
             return $user->project_id === $project->id;
         }
-    
+
+        // Komandan regu (danru): laporan & progress di project sendiri
+        if ($user->role === 'komandan_regu') {
+            return (int) $user->project_id === (int) $project->id;
+        }
+
         return false;
     }
 
@@ -50,6 +55,6 @@ class ProjectPolicy
 
     public function activate(User $user, Project $project): bool
     {
-        return in_array($user->role, ['dev', 'ho']) && !$project->active;
+        return in_array($user->role, ['dev', 'ho']) && ! $project->active;
     }
 }

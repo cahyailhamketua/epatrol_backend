@@ -23,9 +23,15 @@ class ImageWebpService
      */
     public function storeAsWebp(UploadedFile $file, string $directory, int $quality = 80): string
     {
-        $image = $this->images->read($file->getRealPath());
+        return $this->storeAsWebpFromPath($file->getRealPath(), $directory, $quality);
+    }
 
-        // Encode to webp bytes
+    /**
+     * Convert file from a given path to WEBP.
+     */
+    public function storeAsWebpFromPath(string $filePath, string $directory, int $quality = 80): string
+    {
+        $image = $this->images->read($filePath);
         $encoded = $image->toWebp($quality);
 
         $filename = uniqid('img_', true) . '.webp';

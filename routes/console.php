@@ -9,3 +9,4 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('payroll:prepare-drafts')->dailyAt('00:00');
+Schedule::command('patrol:sync-progress')->everyFiveMinutes();

@@ -20,6 +20,7 @@ class OrganizationController extends Controller
 
         $organizations = Organization::query()
             ->select('id', 'name', 'logo', 'start_date', 'end_date', 'active')
+            ->visibleTo($request->user()) // 👈 clean & reusable
             ->when($request->has('active'), fn ($q) =>
                 $q->where('active', $request->boolean('active'))
             )
@@ -27,7 +28,7 @@ class OrganizationController extends Controller
                 $q->where('name', 'like', '%' . $request->search . '%')
             )
             ->orderBy('name')
-            ->paginate($request->get('per_page', 15));
+            ->get();
 
         return response()->json($organizations);
     }
@@ -195,8 +196,10 @@ class OrganizationController extends Controller
                 $q->where('active', true);
             })
             ->orderBy('full_name')
-            ->paginate($request->get('per_page', 15));
+            ->get();
 
-        return response()->json($users);
+        return response()->json([
+            'data' => $users,
+        ]);
     }
 }

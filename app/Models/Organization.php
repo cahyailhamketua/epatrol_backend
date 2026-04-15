@@ -31,4 +31,13 @@ class Organization extends Model
     {
         return $this->hasMany(User::class);
     }
+
+    public function scopeVisibleTo($query, User $user)
+    {
+        if ($user->role === 'dev') {
+            return $query;
+        }
+
+        return $query->where('id', $user->organization_id);
+    }
 }
