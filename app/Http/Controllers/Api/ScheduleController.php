@@ -616,7 +616,7 @@ class ScheduleController extends Controller
 
             // Layout constants
             $colUser = 1; // A
-            $colTeam = 2; // B
+            $colStatus = 2; // B
             $firstDayCol = 3; // C
             $dayCount = count($days);
             $lastDayCol = $firstDayCol + max(0, $dayCount - 1);
@@ -651,9 +651,9 @@ class ScheduleController extends Controller
 
             // Header left labels (merged vertically)
             $sheet->setCellValue($cell($colUser, $headerRowDay), 'Nama');
-            $sheet->setCellValue($cell($colTeam, $headerRowDay), 'Tim');
+            $sheet->setCellValue($cell($colStatus, $headerRowDay), 'Status');
             $sheet->mergeCells($cell($colUser, $headerRowDay) . ':' . $cell($colUser, $headerRowDate));
-            $sheet->mergeCells($cell($colTeam, $headerRowDay) . ':' . $cell($colTeam, $headerRowDate));
+            $sheet->mergeCells($cell($colStatus, $headerRowDay) . ':' . $cell($colStatus, $headerRowDate));
 
             // Day headers (two rows)
             foreach ($days as $i => $dayMeta) {
@@ -715,7 +715,7 @@ class ScheduleController extends Controller
                     $daysData = $r['days'] ?? [];
 
                     $sheet->setCellValue($cell($colUser, $row), $user['name'] ?? '');
-                    $sheet->setCellValue($cell($colTeam, $row), $user['team_name'] ?? '');
+                    $sheet->setCellValue($cell($colStatus, $row), $user['membership_status'] ?? '');
 
                     foreach ($days as $i => $dayMeta) {
                         $date = $dayMeta['date'];
@@ -743,6 +743,44 @@ class ScheduleController extends Controller
 
                 // Spacer row
                 $row++;
+            }
+
+            // Overall summary section (as in schedule sheet API)
+            $overallSummary = $data['overall_summary'] ?? [];
+            if (!empty($overallSummary)) {
+                $sheet->setCellValue($cell($colUser, $row), 'OVERALL SUMMARY');
+                $sheet->mergeCells($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
+                $summaryTitleStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
+                $summaryTitleStyle->getFont()->setBold(true);
+                $summaryTitleStyle->getAlignment()
+                    ->setHorizontal(Alignment::HORIZONTAL_LEFT)
+                    ->setVertical(Alignment::VERTICAL_CENTER);
+                $summaryTitleStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFE6F4EA');
+                $summaryTitleStyle->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
+                $row++;
+
+                $sheet->setCellValue($cell($colUser, $row), 'Keterangan');
+                $sheet->setCellValue($cell($colStatus, $row), 'Total');
+                $summaryHeaderStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($colStatus, $row));
+                $summaryHeaderStyle->getFont()->setBold(true);
+                $summaryHeaderStyle->getAlignment()
+                    ->setHorizontal(Alignment::HORIZONTAL_CENTER)
+                    ->setVertical(Alignment::VERTICAL_CENTER);
+                $summaryHeaderStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFEFEFEF');
+                $summaryHeaderStyle->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
+                $row++;
+
+                foreach ($summaryCols as $key) {
+                    $sheet->setCellValue($cell($colUser, $row), $key);
+                    $sheet->setCellValue($cell($colStatus, $row), (int) ($overallSummary[$key] ?? 0));
+
+                    $summaryRowStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($colStatus, $row));
+                    $summaryRowStyle->getBorders()->getAllBorders()
+                        ->setBorderStyle(Border::BORDER_THIN)
+                        ->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFDDDDDD'));
+                    $sheet->getStyle($cell($colStatus, $row))->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+                    $row++;
+                }
             }
 
             $writer = new Xlsx($spreadsheet);

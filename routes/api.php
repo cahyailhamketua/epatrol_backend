@@ -271,6 +271,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Timesheet
     Route::get('/attendances/timesheet', [AttendanceController::class, 'timesheet']);
 
+    route::get('/attendances/timesheet-three-days', [AttendanceController::class, 'timesheetThreeDays']);
+
     // View attendance detail
     Route::get('/attendances/{attendance}', [AttendanceController::class, 'show']);
 

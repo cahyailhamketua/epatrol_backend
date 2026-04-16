@@ -36,7 +36,7 @@ class PostController extends Controller
         }
         $cacheVersion = $this->getPostCacheVersion();
         $cacheKey = sprintf(
-            'posts:index:user:%d:role:%s:project:%s:org:%s:type:%s:v:%d',
+            'posts:index:user:%d:role:%s:project:%s:org:%s:type:%s:fmt:no-qr:v:%d',
             $user->id,
             $user->role,
             $user->project_id ?? 'none',
@@ -64,7 +64,6 @@ class PostController extends Controller
                             'altitude',
                             'radius'
                         ),
-                        'patrolPoints.qrCode' => fn($q) => $q->select('id', 'patrol_point_id', 'code', 'active'),
                     ])
                     ->orderBy('name');
 
@@ -82,24 +81,7 @@ class PostController extends Controller
                     $query->where('type', $request->type);
                 }
 
-                $result = $query->orderBy('name')->get();
-
-                $result->transform(function ($post) {
-                    $post->patrolPoints->transform(function ($patrolPoint) {
-                        if ($patrolPoint->qrCode) {
-                            $patrolPoint->qr_code_image = $this->buildQrCardDataUri($patrolPoint);
-                            $rel = $this->qrCardImageService->ensurePublicWebpForPatrolPoint($patrolPoint);
-                            $patrolPoint->qr_image = $rel ? url('/storage/'.$rel) : null;
-                        } else {
-                            $patrolPoint->qr_code_image = null;
-                            $patrolPoint->qr_image = null;
-                        }
-                        return $patrolPoint;
-                    });
-                    return $post;
-                });
-
-                return $result;
+                return $query->orderBy('name')->get();
             }
         );
 
@@ -180,8 +162,9 @@ class PostController extends Controller
                 $result = $query->orderBy('name')->get();
 
                 $result->transform(function ($post) {
-                    $post->patrolPoints->transform(function ($patrolPoint) {
+                    $post->patrolPoints->transform(function ($patrolPoint) use ($post) {
                         if ($patrolPoint->qrCode) {
+                            $patrolPoint->setRelation('post', $post);
                             $patrolPoint->qr_code_image = $this->buildQrCardDataUri($patrolPoint);
                             $rel = $this->qrCardImageService->ensurePublicWebpForPatrolPoint($patrolPoint);
                             $patrolPoint->qr_image = $rel ? url('/storage/'.$rel) : null;
@@ -212,7 +195,7 @@ class PostController extends Controller
         $this->authorize('viewAnyByProject', [Post::class, $project]);
 
         $cacheVersion = $this->getPostCacheVersion();
-        $cacheKey = sprintf('posts:index-project:%d:v:%d', $project->id, $cacheVersion);
+        $cacheKey = sprintf('posts:index-project:%d:fmt:no-qr:v:%d', $project->id, $cacheVersion);
         $posts = Cache::remember(
             $cacheKey,
             now()->addSeconds(self::POST_CACHE_TTL_SECONDS),
@@ -232,7 +215,6 @@ class PostController extends Controller
                             'altitude',
                             'radius'
                         ),
-                        'patrolPoints.activeQrCode' => fn($q) => $q->select('id', 'patrol_point_id', 'code', 'active'),
                     ])
                     ->orderBy('name')
                     ->get();
@@ -240,23 +222,7 @@ class PostController extends Controller
         );
 
         return response()->json([
-            'data' => $posts->transform(function ($post) {
-                $post->patrolPoints->transform(function ($patrolPoint) {
-                    $patrolPoint->setRelation('qrCode', $patrolPoint->activeQrCode);
-                    unset($patrolPoint->activeQrCode);
-
-                    if ($patrolPoint->qrCode) {
-                        $patrolPoint->qr_code_image = $this->buildQrCardDataUri($patrolPoint);
-                        $rel = $this->qrCardImageService->ensurePublicWebpForPatrolPoint($patrolPoint);
-                        $patrolPoint->qr_image = $rel ? url('/storage/'.$rel) : null;
-                    } else {
-                        $patrolPoint->qr_code_image = null; // Or a default image
-                        $patrolPoint->qr_image = null;
-                    }
-                    return $patrolPoint;
-                });
-                return $post;
-            }),
+            'data' => $posts,
         ]);
     }
 
