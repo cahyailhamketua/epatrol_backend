@@ -12,7 +12,7 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('attendances', function (Blueprint $table) {
-            $table->unsignedInteger('patrol_scan_count')->default(0)->after('attachment_photo_path');
+            $table->unsignedInteger('patrol_scan_count')->default(0)->after('selfie_photo_path');
         });
     }
 

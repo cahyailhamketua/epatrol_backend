@@ -14,6 +14,7 @@ use Illuminate\Support\Str;
 use Illuminate\Validation\ValidationException;
 use App\Services\QrCardImageService;
 use SimpleSoftwareIO\QrCode\Facades\QrCode;
+use App\Models\QrCode as QrCodeModel;
 
 class PatrolPointController extends Controller
 {
@@ -268,74 +269,78 @@ class PatrolPointController extends Controller
      * - Update altitude hanya jika perlu untuk recalibration
      * - Bisa update radius untuk adjustment validated distance
      */
-    public function update(Request $request, PatrolPoint $patrolPoint)
-    {
-        $this->authorize(
-            'manage',
-            [PatrolPoint::class, $patrolPoint->post->project]
-        );
+public function update(Request $request, PatrolPoint $patrolPoint)
+{
+    $this->authorize(
+        'manage',
+        [PatrolPoint::class, $patrolPoint->post->project]
+    );
 
-        try {
-            $validated = $request->validate([
-                'name' => 'sometimes|string|max:100',
-                'latitude' => 'sometimes|numeric|between:-90,90',
-                'longitude' => 'sometimes|numeric|between:-180,180',
-                'altitude' => 'sometimes|nullable|numeric',
-                'radius' => 'sometimes|integer|min:1',
-                'regenerate_qr' => 'sometimes|boolean',
-            ]);
-        } catch (ValidationException $e) {
-            return response()->json([
-                'success'     => false,
-                'message'     => 'Validation failed',
-                'status_code' => 422,
-                'errors'      => $e->errors(),
-            ], 422);
-        }
-
-        // Jangan boleh update sequence_order
-        if ($request->has('sequence_order')) {
-            return response()->json([
-                'success' => false,
-                'message' => 'Tidak boleh mengubah sequence_order. Hapus dan buat yang baru jika perlu',
-                'current_sequence' => $patrolPoint->sequence_order,
-            ], 422);
-        }
-
-        DB::transaction(function () use ($patrolPoint, $validated) {
-
-            $patrolPoint->update($validated);
-
-            if (!empty($validated['regenerate_qr']) && $validated['regenerate_qr']) {
-
-                // Nonaktifkan QR lama
-                if ($patrolPoint->qrCode) {
-                    $patrolPoint->qrCode->update(['active' => false]);
-                }
-
-                // Buat QR baru
-                $patrolPoint->qrCode()->create([
-                    'code' => strtoupper(Str::uuid()),
-                    'active' => true,
-                ]);
-            }
-        });
-        $this->bumpPatrolPointCacheVersion();
-
-        return response()->json([
-            'success' => true,
-            'message' => 'Patrol point updated successfully',
-            'data' => [
-                'patrol_point' => $patrolPoint->fresh()->load('qrCode')->toArray(),
-                'post_info' => [
-                    'id' => $patrolPoint->post->id,
-                    'name' => $patrolPoint->post->name,
-                    'type' => $patrolPoint->post->type,
-                ],
-                'qr_regenerated' => $validated['regenerate_qr'] ?? false,
-            ],
+    try {
+        $validated = $request->validate([
+            'name' => 'sometimes|string|max:100',
+            'latitude' => 'sometimes|numeric|between:-90,90',
+            'longitude' => 'sometimes|numeric|between:-180,180',
+            'altitude' => 'sometimes|nullable|numeric',
+            'radius' => 'sometimes|integer|min:1',
         ]);
+    } catch (ValidationException $e) {
+        return response()->json([
+            'success'     => false,
+            'message'     => 'Validation failed',
+            'status_code' => 422,
+            'errors'      => $e->errors(),
+        ], 422);
     }
+
+    // Tidak boleh update sequence_order
+    if ($request->has('sequence_order')) {
+        return response()->json([
+            'success' => false,
+            'message' => 'Tidak boleh mengubah sequence_order. Hapus dan buat yang baru jika perlu',
+            'current_sequence' => $patrolPoint->sequence_order,
+        ], 422);
+    }
+
+    DB::transaction(function () use ($patrolPoint, $validated) {
+
+        // Update patrol point
+        $patrolPoint->update([
+            'name'      => $validated['name'] ?? $patrolPoint->name,
+            'latitude'  => $validated['latitude'] ?? $patrolPoint->latitude,
+            'longitude' => $validated['longitude'] ?? $patrolPoint->longitude,
+            'altitude'  => $validated['altitude'] ?? $patrolPoint->altitude,
+            'radius'    => $validated['radius'] ?? $patrolPoint->radius,
+        ]);
+
+        // Ambil QR aktif
+        $activeQr = $patrolPoint->activeQrCode;
+
+        // Pastikan hanya 1 QR aktif
+        if ($activeQr) {
+                QrCodeModel::where('patrol_point_id', $patrolPoint->id)
+                ->where('id', '!=', $activeQr->id)
+                ->update([
+                    'active' => false
+                ]);
+        }
+    });
+
+    $this->bumpPatrolPointCacheVersion();
+
+    return response()->json([
+        'success' => true,
+        'message' => 'Patrol point updated successfully',
+        'data' => [
+            'patrol_point' => $patrolPoint->fresh()->load('activeQrCode')->toArray(),
+            'post_info' => [
+                'id' => $patrolPoint->post->id,
+                'name' => $patrolPoint->post->name,
+                'type' => $patrolPoint->post->type,
+            ],
+        ],
+    ]);
+}
 
 
     /**
@@ -433,9 +438,9 @@ class PatrolPointController extends Controller
   <rect x="90" y="270" width="340" height="340" fill="#ffffff" stroke="#111111" stroke-width="4"/>
   <image href="{$qrDataUri}" x="110" y="290" width="300" height="300" preserveAspectRatio="xMidYMid meet"/>
 
-  {$this->buildMultilineTextSvg($postName, 665, 40, 700, 20, 46, 2)}
+  {$this->buildMultilineTextSvg($postName, 665, 34, 700, 20, 46, 2)}
   {$this->buildMultilineTextSvg($projectName, 760, 38, 700, 22, 42, 2)}
-  {$this->buildMultilineTextSvg($pointName, 830, 34, 500, 24, 38, 1)}
+  {$this->buildMultilineTextSvg($pointName, 800, 34, 500, 24, 38, 2)}
 </svg>
 SVG;
 

@@ -20,6 +20,7 @@ class Absence extends Model
         'S' => 'SAKIT',
         'I' => 'IZIN',
         'A' => 'ALPA',
+        'SOC-A' => 'SOC_A',
     ];
 
     public function schedule()
@@ -35,6 +36,7 @@ class Absence extends Model
             'S' => 'Sakit',
             'I' => 'Izin',
             'A' => 'Alfa',
+            'SOC-A' => 'SOC Alfa',
             default => $this->absence_type,
         };
     }

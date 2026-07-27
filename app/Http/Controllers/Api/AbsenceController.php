@@ -6,12 +6,16 @@ use App\Http\Controllers\Controller;
 use App\Models\Absence;
 use App\Models\Schedule;
 use App\Services\AbsenceService;
+use App\Services\ScheduleCacheService;
 use Illuminate\Http\Request;
 use Illuminate\Http\Response;
 
 class AbsenceController extends Controller
 {
-    public function __construct(protected AbsenceService $absenceService)
+    public function __construct(
+        protected AbsenceService $absenceService,
+        protected ScheduleCacheService $scheduleCacheService
+    )
     {
         $this->middleware('auth:sanctum');
     }
@@ -20,13 +24,13 @@ class AbsenceController extends Controller
      * POST /api/absences
      * Upsert absence untuk satu sel schedule (admin HO / admin lapangan).
      *
-     * Body: { "schedule_id": 1, "absence_type": "C" }  // C|S|I|A
+     * Body: { "schedule_id": 1, "absence_type": "C" }  // C|S|I|A|SOC-A
      */
     public function store(Request $request)
     {
         $validated = $request->validate([
             'schedule_id' => 'required|exists:schedules,id',
-            'absence_type' => 'required|in:C,S,I,A',
+            'absence_type' => 'required|in:C,S,I,A,SOC-A',
         ]);
 
         $schedule = Schedule::with('project')->findOrFail($validated['schedule_id']);
@@ -37,6 +41,8 @@ class AbsenceController extends Controller
                 $validated['schedule_id'],
                 $validated['absence_type']
             );
+
+            $this->scheduleCacheService->bumpScheduleSheetCacheVersion($schedule->project->id);
 
             return response()->json([
                 'success' => true,
@@ -61,10 +67,12 @@ class AbsenceController extends Controller
         $this->authorize('manageForProject', [Absence::class, $absence->schedule->project]);
 
         $validated = $request->validate([
-            'absence_type' => 'required|in:C,S,I,A',
+            'absence_type' => 'required|in:C,S,I,A,SOC-A',
         ]);
 
         $absence->update(['absence_type' => $validated['absence_type']]);
+
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($absence->schedule->project->id);
 
         return response()->json([
             'success' => true,
@@ -85,7 +93,7 @@ class AbsenceController extends Controller
             'project_id' => 'required|exists:projects,id',
             'user_id' => 'sometimes|exists:users,id',
             'month' => 'sometimes|date_format:Y-m',
-            'absence_type' => 'sometimes|in:C,S,I,A',
+            'absence_type' => 'sometimes|in:C,S,I,A,SOC-A',
             'per_page' => 'sometimes|integer|min:1|max:100',
         ]);
 
@@ -146,6 +154,7 @@ class AbsenceController extends Controller
         $this->authorize('manageForProject', [Absence::class, $absence->schedule->project]);
 
         $absence->delete();
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($absence->schedule->project->id);
 
         return response()->json([
             'success' => true,
@@ -163,6 +172,15 @@ class AbsenceController extends Controller
         $this->authorize('manageForProject', [Absence::class, $schedule->project]);
 
         $deleted = Absence::where('schedule_id', $schedule->id)->delete();
+
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($schedule->project->id);
+
+        if ($deleted) {
+            app(\App\Services\PayrollRefreshService::class)->queueRefreshForProjectDate(
+                (int) $schedule->project_id,
+                (string) $schedule->date
+            );
+        }
 
         return response()->json([
             'success' => true,

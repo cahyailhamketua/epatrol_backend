@@ -29,6 +29,7 @@ class User extends Authenticatable
         'role',
         'password',
         'avatar',
+        'ktp_photo',
         'nik',
         'npwp',
         'bpjs_kesehatan',
@@ -39,14 +40,21 @@ class User extends Authenticatable
         'active',
     ];
 
-    protected $appends = ['avatar_url'];
+    protected $appends = ['avatar_url', 'ktp_photo_url'];
 
-public function getAvatarUrlAttribute()
-{
-    return $this->avatar
-        ? \App\Support\SignedMediaUrl::userAvatar($this)
-        : null;
-}
+    public function getAvatarUrlAttribute()
+    {
+        return $this->avatar
+            ? \App\Support\SignedMediaUrl::userAvatar($this)
+            : null;
+    }
+
+    public function getKtpPhotoUrlAttribute()
+    {
+        return $this->ktp_photo
+            ? \App\Support\SignedMediaUrl::userKtpPhoto($this)
+            : null;
+    }
 
     /**
      * The attributes that should be hidden for serialization.
@@ -128,5 +136,36 @@ public function getAvatarUrlAttribute()
     public function teamMemberships()
     {
         return $this->hasMany(TeamUser::class);
+    }
+
+    public function dailyReports()
+    {
+        return $this->hasMany(DailyReport::class);
+    }
+
+    public function personnelConditions()
+    {
+        return $this->hasMany(DailyReportPersonnelCondition::class);
+    }
+
+    public function uniformChecks()
+    {
+        return $this->hasMany(DailyReportUniformPersonnel::class);
+    }
+
+    public function createdBeritaAcaras()
+    {
+        return $this->hasMany(
+            BeritaAcara::class,
+            'created_by'
+        );
+    }
+
+    public function uploadedDocuments()
+    {
+        return $this->hasMany(
+            Document::class,
+            'uploaded_by'
+        );
     }
 }

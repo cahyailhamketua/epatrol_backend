@@ -10,6 +10,18 @@ Route::middleware(['signed'])->group(function () {
         ->name('media.attendance-selfie');
     Route::get('/media/user-avatar/{user}', [SignedMediaController::class, 'userAvatar'])
         ->name('media.user-avatar');
+    Route::get('/media/user-ktp-photo/{user}', [SignedMediaController::class, 'userKtpPhoto'])
+        ->name('media.user-ktp-photo');
+    Route::get('/media/document/{document}', [SignedMediaController::class, 'document'])
+        ->name('media.document');
+    Route::get('/media/daily-report/{report}', [SignedMediaController::class, 'dailyReport'])
+        ->name('media.daily-report');
+    Route::get('/media/organization-logo/{organization}', [SignedMediaController::class, 'organizationLogo'])
+        ->name('media.organization-logo');
+    Route::get('/media/project-logo/{project}', [SignedMediaController::class, 'projectLogo'])
+        ->name('media.project-logo');
+    Route::get('/media/berita-acara/{beritaAcara}', [SignedMediaController::class, 'beritaAcara'])
+        ->name('media.berita-acara');
 });
 
 Route::get('/', function () {

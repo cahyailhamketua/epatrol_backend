@@ -5,6 +5,10 @@ namespace App\Support;
 use App\Models\Attendance;
 use App\Models\PatrolScanPhoto;
 use App\Models\User;
+use App\Models\Document;
+use App\Models\DailyReport;
+use App\Models\Project;
+use App\Models\BeritaAcara;
 use DateTimeInterface;
 use Illuminate\Support\Facades\URL;
 
@@ -43,6 +47,59 @@ class SignedMediaUrl
             'media.user-avatar',
             $expires ?? now()->addDays(7),
             ['user' => $user->id]
+        );
+    }
+
+    public static function userKtpPhoto(User $user, ?DateTimeInterface $expires = null): string
+    {
+        return URL::temporarySignedRoute(
+            'media.user-ktp-photo',
+            $expires ?? now()->addDays(7),
+            ['user' => $user->id]
+        );
+    }
+
+    public static function document(Document $document, ?DateTimeInterface $expires = null): string 
+    {
+        return URL::temporarySignedRoute(
+            'media.document',
+            $expires ?? now()->addDays(7),
+            [
+                'document' => $document->id,
+            ]
+        );
+    }
+
+    public static function dailyReport(DailyReport $report, ?DateTimeInterface $expires = null): string 
+    {
+        return URL::temporarySignedRoute(
+            'media.daily-report',
+            $expires ?? now()->addDays(7),
+            [
+                'report' => $report->id,
+            ]
+        );
+    }
+
+    public static function projectLogo(Project $project, ?DateTimeInterface $expires = null): string
+    {
+        return URL::temporarySignedRoute(
+            'media.project-logo',
+            $expires ?? now()->addDays(7),
+            [
+                'project' => $project->id,
+            ]
+        );
+    }
+
+    public static function beritaAcara(BeritaAcara $beritaAcara, ?DateTimeInterface $expires = null): string
+    {
+        return URL::temporarySignedRoute(
+            'media.berita-acara',
+            $expires ?? now()->addDays(7),
+            [
+                'beritaAcara' => $beritaAcara->id,
+            ]
         );
     }
 }

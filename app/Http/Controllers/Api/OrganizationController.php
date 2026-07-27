@@ -195,6 +195,10 @@ class OrganizationController extends Controller
                 // 🔐 selain dev hanya user aktif
                 $q->where('active', true);
             })
+            ->when($auth->role === 'ho', function ($q) use ($auth) {
+                $q->where('role', '!=', 'ho')
+                  ->where('id', '!=', $auth->id);
+            })  
             ->orderBy('full_name')
             ->get();
 

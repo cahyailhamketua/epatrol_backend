@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\Concerns;
 
+use App\Models\Absence;
 use App\Models\Assignment;
 use App\Models\Attendance;
 use App\Models\PatrolScan;
@@ -37,6 +38,7 @@ trait BuildsProjectReportData
             'employee_name' => 'nullable|string|max:100', // Filter for Employee Search
             'page' => 'nullable|integer|min:1',
             'per_page' => 'nullable|integer|min:1|max:'.self::MAX_PER_PAGE,
+            'tanpa_paginasi' => 'nullable|boolean',
         ];
         if ($allowStatus) {
             $rules['status'] = 'nullable|string|in:tepat_waktu,terlambat,absen,hadir,hadir_telat';
@@ -80,6 +82,44 @@ trait BuildsProjectReportData
             'status' => $allowStatus ? ($data['status'] ?? null) : null,
             'page' => (int) ($data['page'] ?? 1),
             'per_page' => (int) ($data['per_page'] ?? 15),
+            'tanpa_paginasi' => filter_var($data['tanpa_paginasi'] ?? false, FILTER_VALIDATE_BOOLEAN),
+        ];
+    }
+
+    /**
+     * Ambil baris laporan: paginasi default, atau seluruh baris jika tanpa_paginasi=true.
+     *
+     * @return array{items: \Illuminate\Support\Collection, pagination: array<string, mixed>}
+     */
+    protected function fetchReportList($query, array $v): array
+    {
+        if ($v['tanpa_paginasi'] ?? false) {
+            $items = $query->get();
+            $total = $items->count();
+
+            return [
+                'items' => $items,
+                'pagination' => [
+                    'total' => $total,
+                    'per_page' => $total,
+                    'current_page' => 1,
+                    'last_page' => 1,
+                    'tanpa_paginasi' => true,
+                ],
+            ];
+        }
+
+        $paginator = $query->paginate($v['per_page'], ['*'], 'page', $v['page']);
+
+        return [
+            'items' => collect($paginator->items()),
+            'pagination' => [
+                'total' => $paginator->total(),
+                'per_page' => $paginator->perPage(),
+                'current_page' => $paginator->currentPage(),
+                'last_page' => $paginator->lastPage(),
+                'tanpa_paginasi' => false,
+            ],
         ];
     }
 
@@ -161,9 +201,25 @@ trait BuildsProjectReportData
             ];
         }
 
-        if ($dari || $sampai) {
+        if ($dari && ! $sampai) {
+
+            $anchor = $currentTime
+                ? Carbon::createFromFormat('Y-m-d H:i:s', $currentTime, $tz)
+                : Carbon::now($tz);
+        
+            return [
+                'dari_tanggal' => $dari,
+                'sampai_tanggal' => $anchor->toDateString(),
+                'is_default_month' => false,
+                'anchor_time_in_project_tz' => $anchor->format('Y-m-d H:i:s'),
+            ];
+        }
+
+        if (! $dari && $sampai) {
             throw ValidationException::withMessages([
-                'dari_tanggal' => ['Isi kedua dari_tanggal dan sampai_tanggal, atau kosongkan keduanya untuk memakai bulan berjalan (berdasarkan current_time / waktu sekarang).'],
+                'dari_tanggal' => [
+                    'dari_tanggal wajib diisi jika menggunakan sampai_tanggal.'
+                ],
             ]);
         }
 
@@ -203,6 +259,7 @@ trait BuildsProjectReportData
             'assignment_id' => $v['assignment_id'],
             'user_id' => $v['user_id'],
             'status' => $v['status'] ?? null,
+            'tanpa_paginasi' => ($v['tanpa_paginasi'] ?? false) ? true : null,
         ], fn ($x) => $x !== null && $x !== '');
     }
 
@@ -271,8 +328,13 @@ trait BuildsProjectReportData
             ->whereBetween('schedules.date', [$v['dari_tanggal'], $v['sampai_tanggal']]);
 
         // Existing Filters
+        // Note: When filtering by team_id, include schedules with team_id = NULL (removed from team)
+        // to show full attendance history. When no team_id filter, include all schedules.
         if ($v['team_id']) {
-            $q->where('schedules.team_id', $v['team_id']);
+            $q->where(function ($query) use ($v) {
+                $query->where('schedules.team_id', $v['team_id'])
+                      ->orWhereNull('schedules.team_id'); // Include removed team members' schedules for that team
+            });
         }
         if ($v['assignment_id']) {
             $q->where('schedules.assignment_id', $v['assignment_id']);
@@ -295,7 +357,7 @@ trait BuildsProjectReportData
         return $q;
     }
 
-    protected function applyAttendanceStatusFilter($query, ?string $status): void
+    protected function applyAttendanceStatusFilter($query, ?string $status, ?string $today = null): void
     {
         if (! $status) {
             return;
@@ -312,13 +374,16 @@ trait BuildsProjectReportData
             });
         } elseif ($status === 'absen') {
             $query->where(function ($q) {
-        $q->whereDoesntHave('attendance')
+                $q->whereDoesntHave('attendance')
                     ->orWhereHas('attendance', fn ($a) => $a->whereNull('check_in_at'));
             });
+            if ($today) {
+                $query->where('schedules.date', '<=', $today);
+            }
         }
     }
 
-    protected function attendanceSummary($baseQuery): array
+    protected function attendanceSummary($baseQuery, ?string $today = null): array
     {
         $totalJadwal = (clone $baseQuery)->count();
         $totalKaryawan = (clone $baseQuery)->pluck('user_id')->unique()->count();
@@ -333,10 +398,14 @@ trait BuildsProjectReportData
                 ->where('attendance_status', 'like', '%TELAT%');
         })->count();
 
-        $absen = (clone $baseQuery)->where(function ($q) {
+        $absenQuery = (clone $baseQuery)->where(function ($q) {
             $q->whereDoesntHave('attendance')
                 ->orWhereHas('attendance', fn ($a) => $a->whereNull('check_in_at'));
-        })->count();
+        });
+        if ($today) {
+            $absenQuery->where('schedules.date', '<=', $today);
+        }
+        $absen = $absenQuery->count();
 
         return [
             'total_hadir_tepat_waktu' => $hadirTepat,
@@ -347,27 +416,27 @@ trait BuildsProjectReportData
         ];
     }
 
-    protected function mapAttendanceRow(Schedule $schedule, string $tz): array
+    protected function mapAttendanceRow(Schedule $schedule, string $tz, ?string $today = null): array
     {
         $assignment = $schedule->assignment;
         $user = $schedule->user;
         $attendance = $schedule->attendance;
         $absence = $schedule->absence;
+        $scheduleDate = $schedule->date instanceof Carbon
+            ? $schedule->date->format('Y-m-d')
+            : (string) $schedule->date;
+        $today = $today ?? Carbon::now($tz)->toDateString();
 
         $shiftLabel = $assignment
             ? $assignment->name.' ('.substr((string) $assignment->start_time, 0, 5).'-'.substr((string) $assignment->end_time, 0, 5).')'
             : null;
 
-        $plotting = $attendance?->post ? [
-            'id' => $attendance->post->id,
-            'name' => $attendance->post->name,
-            'type' => $attendance->post->type,
-        ] : null;
+        $plotting = $this->resolveAttendancePlotting($attendance, $user);
 
         $checkIn = $attendance?->check_in_at?->copy()->setTimezone($tz)->format('H:i');
         $checkOut = $attendance?->check_out_at?->copy()->setTimezone($tz)->format('H:i');
 
-        $status = $this->resolveAttendanceRowStatus($attendance, $absence);
+        $status = $this->resolveAttendanceRowStatus($attendance, $absence, $scheduleDate, $today);
 
         $lateMinutes = null;
         if ($attendance && $attendance->check_in_at && str_contains((string) $attendance->attendance_status, 'TELAT')) {
@@ -383,9 +452,9 @@ trait BuildsProjectReportData
             ];
         }
 
-        return [
+        $row = [
             'schedule_id' => $schedule->id,
-            'tanggal' => $schedule->date instanceof Carbon ? $schedule->date->format('Y-m-d') : (string) $schedule->date,
+            'tanggal' => $scheduleDate,
             'nama_karyawan' => $user?->full_name,
             'user' => $user ? [
                 'id' => $user->id,
@@ -410,29 +479,91 @@ trait BuildsProjectReportData
             'photo_attendance' => $photoAttendance,
             'timezone' => $tz,
         ];
+
+        $row['absence'] = null;
+
+        if ($status['key'] === 'absen') {
+            $row['absence'] = $this->mapScheduleAbsence($absence);
+        }
+
+        return $row;
     }
 
-    protected function resolveAttendanceRowStatus(?Attendance $attendance, $absence): array
+    /**
+     * @return string|array{id: int, name: string, type: string|null}|null
+     */
+    protected function resolveAttendancePlotting(?Attendance $attendance, ?User $user): string|array|null
     {
-        if ($absence && ! $attendance?->check_in_at) {
-            return match ($absence->absence_type) {
-                'C' => ['key' => 'cuti', 'label' => 'Cuti'],
-                'S' => ['key' => 'sakit', 'label' => 'Sakit'],
-                'I' => ['key' => 'izin', 'label' => 'Izin'],
-                'A' => ['key' => 'alfa', 'label' => 'Alfa'],
-                default => ['key' => 'absen', 'label' => 'Absen'],
-            };
+        if (! $attendance) {
+            return null;
         }
 
+        if ($user?->role === 'komandan_regu') {
+            return 'komandan_regu';
+        }
+
+        if ($user?->role === 'admin_project') {
+            return 'admin project';
+        }
+
+        if ($attendance->post) {
+            return [
+                'id' => $attendance->post->id,
+                'name' => $attendance->post->name,
+                'type' => $attendance->post->type,
+            ];
+        }
+
+        return null;
+    }
+
+    protected function mapScheduleAbsence(?Absence $absence): ?array
+    {
+        if (! $absence) {
+            return null;
+        }
+
+        return [
+            'id' => $absence->id,
+            'type' => $absence->absence_type,
+            'label' => $absence->label,
+            'summary_key' => Absence::TYPE_TO_SUMMARY_KEY[$absence->absence_type] ?? null,
+        ];
+    }
+
+    protected function resolveAttendanceRowStatus(
+        ?Attendance $attendance,
+        $absence,
+        string $scheduleDate,
+        string $today
+    ): array
+    {
         if (! $attendance || ! $attendance->check_in_at) {
-            return ['key' => 'absen', 'label' => 'Absen'];
+    
+            if ($scheduleDate > $today) {
+                return [
+                    'key' => null,
+                    'label' => null,
+                ];
+            }
+    
+            return [
+                'key' => 'absen',
+                'label' => 'Absen',
+            ];
         }
-
+    
         if (str_contains((string) $attendance->attendance_status, 'TELAT')) {
-            return ['key' => 'terlambat', 'label' => 'Terlambat'];
+            return [
+                'key' => 'terlambat',
+                'label' => 'Terlambat',
+            ];
         }
-
-        return ['key' => 'tepat_waktu', 'label' => 'Tepat Waktu'];
+    
+        return [
+            'key' => 'tepat_waktu',
+            'label' => 'Tepat Waktu',
+        ];
     }
 
     protected function patrolScanBaseQuery(Project $project, array $v)

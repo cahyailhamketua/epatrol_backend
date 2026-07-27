@@ -8,6 +8,7 @@ use App\Models\PatrolScan;
 use App\Models\Project;
 use App\Models\Schedule;
 use App\Models\User;
+use App\Services\ScheduleCacheService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
 
@@ -19,10 +20,18 @@ use Illuminate\Support\Facades\Cache;
  * Tanggal: jika `dari_tanggal` & `sampai_tanggal` kosong → otomatis bulan berjalan menurut `current_time` (Y-m-d H:i:s, timezone project) atau waktu sekarang.
  *
  * Filter: kehadiran — shift (assignment_id), karyawan (user_id); patrol danru — regu, post; patrol pos — post, karyawan.
+ *
+ * Paginasi: default page & per_page. Tambahkan `tanpa_paginasi=true` untuk mengembalikan seluruh baris (tanpa page/per_page).
  */
 class ProjectReportController extends Controller
 {
     use BuildsProjectReportData;
+
+    private const ATTENDANCE_REPORT_CACHE_TTL_SECONDS = 300;
+
+    public function __construct(
+        protected ScheduleCacheService $scheduleCacheService,
+    ) {}
 
     protected function getCacheKey(string $type, int $projectId, array $filters): string
     {
@@ -38,51 +47,55 @@ class ProjectReportController extends Controller
         $v = $this->validatedFilters($request, $project, true);
         $this->validateAttendanceReportUserFilter($request, $project, $v['user_id'] ?? null);
 
-        $cacheKey = $this->getCacheKey('attendance', $project->id, $v);
-        
-        return Cache::remember($cacheKey, 60, function () use ($project, $v) {
-            $tz = $this->projectTimezone($project);
-            $base = $this->attendanceBaseQuery($project, $v);
-            $summary = $this->attendanceSummary(clone $base);
+        $cacheVersion = $this->scheduleCacheService->getScheduleSheetCacheVersion($project->id);
+        $cacheKey = $this->scheduleCacheService->attendanceReportCacheKey($project->id, $v, $cacheVersion);
 
-            $listQuery = clone $base;
-            $this->applyAttendanceStatusFilter($listQuery, $v['status'] ?? null);
+        return Cache::remember(
+            $cacheKey,
+            now()->addSeconds(self::ATTENDANCE_REPORT_CACHE_TTL_SECONDS),
+            function () use ($project, $v) {
+                $tz = $this->projectTimezone($project);
+                $today = \Carbon\Carbon::now($tz)->toDateString();
+                $base = $this->attendanceBaseQuery($project, $v);
+                $summary = $this->attendanceSummary(clone $base, $today);
 
-            $paginator = $listQuery
-                ->with(['user', 'assignment', 'team', 'absence', 'attendance.post'])
-                ->orderByDesc('date')
-                ->orderBy('user_id')
-                ->paginate($v['per_page'], ['*'], 'page', $v['page']);
+                $listQuery = clone $base;
+                $this->applyAttendanceStatusFilter($listQuery, $v['status'] ?? null, $today);
 
-            $rows = collect($paginator->items())->map(function (Schedule $schedule) use ($tz) {
-                return $this->mapAttendanceRow($schedule, $tz);
-            })->values();
+                $result = $this->fetchReportList(
+                    $listQuery
+                        ->with(['user', 'assignment', 'team', 'absence', 'attendance.post'])
+                        ->orderBy('date')
+                        ->orderBy('user_id'),
+                    $v
+                );
 
-            return response()->json([
-                'success' => true,
-                'report' => 'laporan_kehadiran',
-                'project' => ['id' => $project->id, 'name' => $project->name],
-                'filters_applied' => $this->publicFilters($v),
-                'summary' => $summary,
-                'data' => $rows,
-                'pagination' => [
-                    'total' => $paginator->total(),
-                    'per_page' => $paginator->perPage(),
-                    'current_page' => $paginator->currentPage(),
-                    'last_page' => $paginator->lastPage(),
-                ],
-                'field_descriptions' => [
-                    'tanggal' => 'Tanggal jadwal (shift).',
-                    'shift' => 'Assignment (nama, kode, jam).',
-                    'plotting' => 'Pos setelah check-in.',
-                    'absen_masuk' => 'Jam check-in (timezone project).',
-                    'absen_keluar' => 'Jam check-out (timezone project).',
-                    'status' => 'tepat_waktu | terlambat | absen | cuti | sakit | izin | alfa.',
-                    'late_minutes' => 'Menit terlambat jika status telat; null jika tidak telat.',
-                    'photo_attendance' => 'Foto absen kehadiran (selfie) beserta url publiknya.',
-                ],
-            ]);
-        });
+                $rows = $result['items']->map(function (Schedule $schedule) use ($tz, $today) {
+                    return $this->mapAttendanceRow($schedule, $tz, $today);
+                })->values();
+
+                return response()->json([
+                    'success' => true,
+                    'report' => 'laporan_kehadiran',
+                    'project' => ['id' => $project->id, 'name' => $project->name],
+                    'filters_applied' => $this->publicFilters($v),
+                    'summary' => $summary,
+                    'data' => $rows,
+                    'pagination' => $result['pagination'],
+                    'field_descriptions' => [
+                        'tanggal' => 'Tanggal jadwal (shift).',
+                        'shift' => 'Assignment (nama, kode, jam).',
+                        'plotting' => 'Pos dari attendance.post; komandan_regu / admin project jika role sesuai; null jika belum ada data.',
+                        'absen_masuk' => 'Jam check-in (timezone project).',
+                        'absen_keluar' => 'Jam check-out (timezone project).',
+                        'status' => 'tepat_waktu | terlambat | absen | cuti | sakit | izin | alfa | null (jadwal mendatang tanpa attendance).',
+                        'absence' => 'Data absence dari schedule sheet; hanya ada jika status absen.',
+                        'late_minutes' => 'Menit terlambat jika status telat; null jika tidak telat.',
+                        'photo_attendance' => 'Foto absen kehadiran (selfie) beserta url publiknya.',
+                    ],
+                ]);
+            }
+        );
     }
 
     public function patrolDanruReport(Request $request, Project $project)
@@ -97,12 +110,14 @@ class ProjectReportController extends Controller
         return Cache::remember($cacheKey, 60, function () use ($project, $v) {
             $tz = $this->projectTimezone($project);
 
-            $paginator = $this->patrolDanruFilteredQuery($project, $v)
-                ->with(['attendance.user', 'qrCode.patrolPoint.post', 'photos'])
-                ->orderByDesc('scan_time')
-                ->paginate($v['per_page'], ['*'], 'page', $v['page']);
+            $result = $this->fetchReportList(
+                $this->patrolDanruFilteredQuery($project, $v)
+                    ->with(['attendance.user', 'qrCode.patrolPoint.post', 'photos'])
+                    ->orderBy('scan_time'),
+                $v
+            );
 
-            $rows = collect($paginator->items())->map(fn (PatrolScan $scan) => $this->mapPatrolDanruRow($scan, $tz))->values();
+            $rows = $result['items']->map(fn (PatrolScan $scan) => $this->mapPatrolDanruRow($scan, $tz))->values();
 
             return response()->json([
                 'success' => true,
@@ -110,15 +125,10 @@ class ProjectReportController extends Controller
                 'project' => ['id' => $project->id, 'name' => $project->name],
                 'filters_applied' => $this->publicFilters($v),
                 'summary' => [
-                    'total_scan_rows' => $paginator->total(),
+                    'total_scan_rows' => $result['pagination']['total'],
                 ],
                 'data' => $rows,
-                'pagination' => [
-                    'total' => $paginator->total(),
-                    'per_page' => $paginator->perPage(),
-                    'current_page' => $paginator->currentPage(),
-                    'last_page' => $paginator->lastPage(),
-                ],
+                'pagination' => $result['pagination'],
                 'field_descriptions' => [
                     'tanggal' => 'Tanggal attendance (shift).',
                     'nama_danru' => 'Komandan regu.',
@@ -144,12 +154,14 @@ class ProjectReportController extends Controller
         return Cache::remember($cacheKey, 60, function () use ($project, $v) {
             $tz = $this->projectTimezone($project);
 
-            $paginator = $this->patrolPosFilteredQuery($project, $v)
-                ->with(['attendance.user', 'attendance.post', 'qrCode.patrolPoint.post', 'photos'])
-                ->orderByDesc('scan_time')
-                ->paginate($v['per_page'], ['*'], 'page', $v['page']);
+            $result = $this->fetchReportList(
+                $this->patrolPosFilteredQuery($project, $v)
+                    ->with(['attendance.user', 'attendance.post', 'qrCode.patrolPoint.post', 'photos'])
+                    ->orderBy('scan_time'),
+                $v
+            );
 
-            $rows = collect($paginator->items())->map(fn (PatrolScan $scan) => $this->mapPatrolPosRow($scan, $tz))->values();
+            $rows = $result['items']->map(fn (PatrolScan $scan) => $this->mapPatrolPosRow($scan, $tz))->values();
 
             return response()->json([
                 'success' => true,
@@ -157,15 +169,10 @@ class ProjectReportController extends Controller
                 'project' => ['id' => $project->id, 'name' => $project->name],
                 'filters_applied' => $this->publicFilters($v),
                 'summary' => [
-                    'total_scan_rows' => $paginator->total(),
+                    'total_scan_rows' => $result['pagination']['total'],
                 ],
                 'data' => $rows,
-                'pagination' => [
-                    'total' => $paginator->total(),
-                    'per_page' => $paginator->perPage(),
-                    'current_page' => $paginator->currentPage(),
-                    'last_page' => $paginator->lastPage(),
-                ],
+                'pagination' => $result['pagination'],
                 'field_descriptions' => [
                     'tanggal' => 'Tanggal attendance.',
                     'nama_anggota' => 'Anggota yang scan.',
@@ -196,6 +203,7 @@ class ProjectReportController extends Controller
         
         return Cache::remember($cacheKey, 60, function () use ($project, $v) {
             $tz = $this->projectTimezone($project);
+            $today = \Carbon\Carbon::now($tz)->toDateString();
 
             $targetUser = ($v['user_id'] ?? null) ? User::find($v['user_id']) : null;
             $vDanru = $v;
@@ -206,29 +214,35 @@ class ProjectReportController extends Controller
             }
 
             $base = $this->attendanceBaseQuery($project, $v);
-            $summary = $this->attendanceSummary(clone $base);
+            $summary = $this->attendanceSummary(clone $base, $today);
 
             $listQuery = clone $base;
-            $this->applyAttendanceStatusFilter($listQuery, $v['status'] ?? null);
-            $attPaginator = $listQuery
-                ->with(['user', 'assignment', 'team', 'absence', 'attendance.post'])
-                ->orderByDesc('date')
-                ->orderBy('user_id')
-                ->paginate($v['per_page'], ['*'], 'page', $v['page']);
+            $this->applyAttendanceStatusFilter($listQuery, $v['status'] ?? null, $today);
+            $attResult = $this->fetchReportList(
+                $listQuery
+                    ->with(['user', 'assignment', 'team', 'absence', 'attendance.post'])
+                    ->orderBy('date')
+                    ->orderBy('user_id'),
+                $v
+            );
 
-            $attRows = collect($attPaginator->items())->map(fn (Schedule $s) => $this->mapAttendanceRow($s, $tz))->values();
+            $attRows = $attResult['items']->map(fn (Schedule $s) => $this->mapAttendanceRow($s, $tz, $today))->values();
 
-            $danruPaginator = $this->patrolDanruFilteredQuery($project, $vDanru)
-                ->with(['attendance.user', 'qrCode.patrolPoint.post', 'photos'])
-                ->orderByDesc('scan_time')
-                ->paginate($v['per_page'], ['*'], 'page', $v['page']);
-            $danruRows = collect($danruPaginator->items())->map(fn (PatrolScan $s) => $this->mapPatrolDanruRow($s, $tz))->values();
+            $danruResult = $this->fetchReportList(
+                $this->patrolDanruFilteredQuery($project, $vDanru)
+                    ->with(['attendance.user', 'qrCode.patrolPoint.post', 'photos'])
+                    ->orderBy('scan_time'),
+                $v
+            );
+            $danruRows = $danruResult['items']->map(fn (PatrolScan $s) => $this->mapPatrolDanruRow($s, $tz))->values();
 
-            $posPaginator = $this->patrolPosFilteredQuery($project, $vPos)
-                ->with(['attendance.user', 'attendance.post', 'qrCode.patrolPoint.post', 'photos'])
-                ->orderByDesc('scan_time')
-                ->paginate($v['per_page'], ['*'], 'page', $v['page']);
-            $posRows = collect($posPaginator->items())->map(fn (PatrolScan $s) => $this->mapPatrolPosRow($s, $tz))->values();
+            $posResult = $this->fetchReportList(
+                $this->patrolPosFilteredQuery($project, $vPos)
+                    ->with(['attendance.user', 'attendance.post', 'qrCode.patrolPoint.post', 'photos'])
+                    ->orderBy('scan_time'),
+                $v
+            );
+            $posRows = $posResult['items']->map(fn (PatrolScan $s) => $this->mapPatrolPosRow($s, $tz))->values();
 
             return response()->json([
                 'success' => true,
@@ -238,32 +252,17 @@ class ProjectReportController extends Controller
                 'laporan_kehadiran' => [
                     'summary' => $summary,
                     'data' => $attRows,
-                    'pagination' => [
-                        'total' => $attPaginator->total(),
-                        'per_page' => $attPaginator->perPage(),
-                        'current_page' => $attPaginator->currentPage(),
-                        'last_page' => $attPaginator->lastPage(),
-                    ],
+                    'pagination' => $attResult['pagination'],
                 ],
                 'laporan_patrol_danru' => [
-                    'summary' => ['total_scan_rows' => $danruPaginator->total()],
+                    'summary' => ['total_scan_rows' => $danruResult['pagination']['total']],
                     'data' => $danruRows,
-                    'pagination' => [
-                        'total' => $danruPaginator->total(),
-                        'per_page' => $danruPaginator->perPage(),
-                        'current_page' => $danruPaginator->currentPage(),
-                        'last_page' => $danruPaginator->lastPage(),
-                    ],
+                    'pagination' => $danruResult['pagination'],
                 ],
                 'laporan_patrol_pos' => [
-                    'summary' => ['total_scan_rows' => $posPaginator->total()],
+                    'summary' => ['total_scan_rows' => $posResult['pagination']['total']],
                     'data' => $posRows,
-                    'pagination' => [
-                        'total' => $posPaginator->total(),
-                        'per_page' => $posPaginator->perPage(),
-                        'current_page' => $posPaginator->currentPage(),
-                        'last_page' => $posPaginator->lastPage(),
-                    ],
+                    'pagination' => $posResult['pagination'],
                 ],
             ]);
         });

@@ -13,6 +13,7 @@ class Project extends Model
         'organization_id',
         'name',
         'code',
+        'logo',
         'location_latitude',
         'location_longitude',
         'location_address',
@@ -75,5 +76,40 @@ class Project extends Model
     public function payrollTemplates()
     {
         return $this->hasMany(PayrollUserTemplate::class);
+    }
+
+    public function payrollProjectRule()
+    {
+        return $this->hasOne(PayrollProjectRule::class);
+    }
+
+    public function dailyReports()
+    {
+        return $this->hasMany(DailyReport::class);
+    }
+
+    public function uniformComponents()
+    {
+        return $this->hasMany(UniformComponent::class);
+    }
+
+    public function equipmentComponents()
+    {
+        return $this->hasMany(EquipmentComponent::class);
+    }
+
+    public function beritaAcaras()
+    {
+        return $this->hasMany(BeritaAcara::class);
+    }
+
+    public function documentTypes()
+    {
+        return $this->hasMany(DocumentType::class);
+    }
+
+    public function documents()
+    {
+        return $this->hasMany(Document::class);
     }
 }

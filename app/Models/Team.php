@@ -9,7 +9,7 @@ class Team extends Model
     protected $fillable = [
         'project_id',
         'name',
-        'leader_id'
+        'leader_id',
     ];
 
     public function project()
@@ -19,7 +19,7 @@ class Team extends Model
 
     public function leader()
     {
-        return $this->belongsTo(User::class,'leader_id');
+        return $this->belongsTo(User::class, 'leader_id');
     }
 
     public function users()
@@ -27,6 +27,11 @@ class Team extends Model
         return $this->belongsToMany(User::class, 'team_users')
             ->withPivot('start_date', 'end_date')
             ->withTimestamps();
+    }
+
+    public function activeUsers()
+    {
+        return $this->users()->wherePivotNull('end_date');
     }
 
     public function schedules()

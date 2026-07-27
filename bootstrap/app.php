@@ -15,14 +15,22 @@ return Application::configure(basePath: dirname(__DIR__))
     )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->append(HandleCors::class);
+    
+        // 🔥 OVERRIDE AUTH MIDDLEWARE
+        $middleware->alias([
+            'auth' => \App\Http\Middleware\Authenticate::class,
+        ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        $exceptions->render(function (AuthenticationException $e, $request) {
-            // Pastikan token tidak valid/expired selalu 401 (API)
-            if ($request->expectsJson()) {
-                return response()->json([
-                    'message' => 'Unauthenticated.',
-                ], 401);
-            }
+
+        $exceptions->shouldRenderJsonWhen(function ($request, $e) {
+            return $request->is('api/*');
         });
+    
+        $exceptions->render(function (AuthenticationException $e, $request) {
+            return response()->json([
+                'message' => 'Unauthenticated.',
+            ], 401);
+        });
+    
     })->create();

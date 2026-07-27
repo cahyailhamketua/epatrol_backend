@@ -1,0 +1,469 @@
+{
+  "info": {
+    "_postman_id": "mobile-patrol-scan-api",
+    "name": "Mobile Patrol Scan API",
+    "description": "Complete API collection untuk mobile patrol scan application dengan location validation",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "🔍 Check QR Code",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"attendance_id\": {{attendance_id}},\n  \"qr_code\": \"QR001\",\n  \"scan_latitude\": -6.123456,\n  \"scan_longitude\": 106.789012,\n  \"scan_altitude\": 50\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan/check-qr",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "patrol-scan", "check-qr"]
+        },
+        "description": "Validasi QR Code sebelum scan:\n- Cek QR code valid\n- Cek lokasi dalam radius\n- Return remaining checkpoints\n\nResponse:\n- success: true/false\n- is_in_radius: true/false\n- distance: jarak dalam meter\n- remaining_patrol_points: list checkpoint"
+      },
+      "response": []
+    },
+    {
+      "name": "🔍 Check QR - Radius Error",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"attendance_id\": {{attendance_id}},\n  \"qr_code\": \"QR001\",\n  \"scan_latitude\": -6.999999,\n  \"scan_longitude\": 106.999999,\n  \"scan_altitude\": 50\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan/check-qr",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "patrol-scan", "check-qr"]
+        },
+        "description": "Test lokasi terlalu jauh dari checkpoint (melewati radius)"
+      },
+      "response": []
+    },
+    {
+      "name": "🔍 Check QR - Invalid QR",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"attendance_id\": {{attendance_id}},\n  \"qr_code\": \"INVALID_QR\",\n  \"scan_latitude\": -6.123456,\n  \"scan_longitude\": 106.789012,\n  \"scan_altitude\": 50\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan/check-qr",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "patrol-scan", "check-qr"]
+        },
+        "description": "Test dengan QR code yang tidak valid"
+      },
+      "response": []
+    },
+    {
+      "name": "📸 Perform Scan - Success",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "attendance_id",
+              "value": "{{attendance_id}}",
+              "type": "text"
+            },
+            {
+              "key": "qr_code",
+              "value": "QR001",
+              "type": "text"
+            },
+            {
+              "key": "scan_latitude",
+              "value": "-6.123456",
+              "type": "text"
+            },
+            {
+              "key": "scan_longitude",
+              "value": "106.789012",
+              "type": "text"
+            },
+            {
+              "key": "scan_altitude",
+              "value": "50",
+              "type": "text"
+            },
+            {
+              "key": "note",
+              "value": "Test scan dari mobile - kondisi normal",
+              "type": "text"
+            },
+            {
+              "key": "current_time",
+              "value": "2026-05-11 13:15:00",
+              "type": "text"
+            },
+            {
+              "key": "photos[0]",
+              "type": "file",
+              "src": "/path/to/photo1.jpg",
+              "description": "Photo 1 - Required"
+            },
+            {
+              "key": "photos[1]",
+              "type": "file",
+              "src": "/path/to/photo2.jpg",
+              "description": "Photo 2 - Required"
+            },
+            {
+              "key": "photos[2]",
+              "type": "file",
+              "src": "/path/to/photo3.jpg",
+              "description": "Photo 3 - Required"
+            },
+            {
+              "key": "photos[3]",
+              "type": "file",
+              "src": "/path/to/photo4.jpg",
+              "description": "Photo 4 - Required (Minimum 4)"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "patrol-scan"]
+        },
+        "description": "Perform patrol scan dengan upload foto (minimal 4)\n\n⚠️ IMPORTANT:\n1. Ganti /path/to/photo*.jpg dengan path file lokal\n2. Minimal 4 foto harus di-upload\n3. Max 5MB per foto\n4. Format: JPG, PNG, WebP\n5. current_time harus Y-m-d H:i:s format\n\nResponse:\n- scan_id: ID scan baru\n- progress: {total, scanned, percentage}"
+      },
+      "response": []
+    },
+    {
+      "name": "📸 Perform Scan - Foto Kurang",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "attendance_id",
+              "value": "{{attendance_id}}",
+              "type": "text"
+            },
+            {
+              "key": "qr_code",
+              "value": "QR001",
+              "type": "text"
+            },
+            {
+              "key": "scan_latitude",
+              "value": "-6.123456",
+              "type": "text"
+            },
+            {
+              "key": "scan_longitude",
+              "value": "106.789012",
+              "type": "text"
+            },
+            {
+              "key": "note",
+              "value": "Test dengan foto kurang",
+              "type": "text"
+            },
+            {
+              "key": "current_time",
+              "value": "2026-05-11 13:15:00",
+              "type": "text"
+            },
+            {
+              "key": "photos[0]",
+              "type": "file",
+              "src": "/path/to/photo1.jpg"
+            },
+            {
+              "key": "photos[1]",
+              "type": "file",
+              "src": "/path/to/photo2.jpg"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "patrol-scan"]
+        },
+        "description": "Test dengan foto kurang (hanya 2, padahal minimum 4)\n\nExpected Response:\n- success: false\n- error: \"Minimal 4 foto wajib diupload\""
+      },
+      "response": []
+    },
+    {
+      "name": "📸 Perform Scan - Radius Error",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "formdata",
+          "formdata": [
+            {
+              "key": "attendance_id",
+              "value": "{{attendance_id}}",
+              "type": "text"
+            },
+            {
+              "key": "qr_code",
+              "value": "QR001",
+              "type": "text"
+            },
+            {
+              "key": "scan_latitude",
+              "value": "-6.999999",
+              "type": "text"
+            },
+            {
+              "key": "scan_longitude",
+              "value": "106.999999",
+              "type": "text"
+            },
+            {
+              "key": "note",
+              "value": "Lokasi jauh",
+              "type": "text"
+            },
+            {
+              "key": "current_time",
+              "value": "2026-05-11 13:15:00",
+              "type": "text"
+            },
+            {
+              "key": "photos[0]",
+              "type": "file",
+              "src": "/path/to/photo1.jpg"
+            },
+            {
+              "key": "photos[1]",
+              "type": "file",
+              "src": "/path/to/photo2.jpg"
+            },
+            {
+              "key": "photos[2]",
+              "type": "file",
+              "src": "/path/to/photo3.jpg"
+            },
+            {
+              "key": "photos[3]",
+              "type": "file",
+              "src": "/path/to/photo4.jpg"
+            }
+          ]
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "patrol-scan"]
+        },
+        "description": "Test lokasi terlalu jauh (melampaui radius)\n\nExpected Response:\n- success: false\n- error: \"Lokasi scan terlalu jauh. Jarak: XXX.XX m, Radius: XX.XX m\""
+      },
+      "response": []
+    },
+    {
+      "name": "📊 Get Attendance Scans",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/attendance/{{attendance_id}}/patrol-scans",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "attendance", "{{attendance_id}}", "patrol-scans"]
+        },
+        "description": "Get semua scan untuk attendance tertentu\n\nResponse:\n- attendance: {id, user_name, post_name, date, check_in_at, check_out_at}\n- progress: {total_posts, posts_covered, percentage}\n- patrol_progress: {total_patrol_points, scanned_patrol_points, percentage}\n- patrol_points: [{id, name, is_scanned, last_scan_time}]\n- scan_details: [{id, patrol_point_name, scan_time, photos}]\n- total_scans: jumlah scan\n- total_photos: jumlah foto"
+      },
+      "response": []
+    },
+    {
+      "name": "📊 Get Scan Progress",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/attendance/{{attendance_id}}/patrol-scan/progress",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "attendance", "{{attendance_id}}", "patrol-scan", "progress"]
+        },
+        "description": "Get progress bar data (quick info)\n\nResponse:\n- progress: {total, scanned, percentage}"
+      },
+      "response": []
+    },
+    {
+      "name": "📊 Get Scan Statistics",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/attendance/{{attendance_id}}/patrol-scan/statistics",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "attendance", "{{attendance_id}}", "patrol-scan", "statistics"]
+        },
+        "description": "Get scan statistics untuk verification\n\nResponse:\n- total_scans: jumlah scan\n- total_photos: jumlah foto\n- completion_time_minutes: berapa lama scan selesai\n- progress: {total, scanned, percentage}\n- all_completed: boolean"
+      },
+      "response": []
+    },
+    {
+      "name": "📥 Download Scan Photo",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan-photo/{{photo_id}}/download",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "patrol-scan-photo", "{{photo_id}}", "download"]
+        },
+        "description": "Download photo file\n\nNote: Gunakan {{photo_id}} dari scan details response"
+      },
+      "response": []
+    },
+    {
+      "name": "🖼️ View Scan Photo (Inline)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{token}}",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan-photo/{{photo_id}}/inline",
+          "protocol": "http",
+          "host": ["{{BASE_URL}}"],
+          "path": ["api", "patrol-scan-photo", "{{photo_id}}", "inline"]
+        },
+        "description": "View photo inline (di browser/app)\n\nNote: Return Content-Disposition: inline (tidak download)"
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "token",
+      "value": "YOUR_BEARER_TOKEN_HERE",
+      "type": "string"
+    },
+    {
+      "key": "attendance_id",
+      "value": "15",
+      "type": "string"
+    },
+    {
+      "key": "photo_id",
+      "value": "1",
+      "type": "string"
+    }
+  ]
+}

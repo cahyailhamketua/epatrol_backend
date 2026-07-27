@@ -7,6 +7,7 @@ use App\Models\Absence;
 use App\Models\Activity;
 use App\Models\Assignment;
 use App\Models\Attendance;
+use App\Models\AttendanceProgressSnapshot;
 use App\Models\OvertimeLog;
 use App\Models\PatrolPoint;
 use App\Models\PatrolScan;
@@ -17,6 +18,8 @@ use App\Models\User;
 use App\Services\ImageWebpService;
 use App\Services\OffDayOvertimeService;
 use App\Services\PatrolScanService;
+use App\Services\OfflineSyncService;
+use App\Services\ProgressPdfExportService;
 use App\Support\SignedMediaUrl;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
@@ -27,14 +30,39 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Redis;
 use App\Services\AttendanceService;
+use App\Services\ScheduleCacheService;
+use App\Services\PayrollService;
+use App\Jobs\AutoCheckoutAttendance;
+use App\Events\AttendanceUpdated;
+use App\Services\ProgressService;
+use App\Services\Progress\AttendanceProgressService;
+use App\Services\Progress\TeamProgressService;
+use App\Transformers\ProgressTransformer;
 
 class AttendanceController extends Controller
 {
     protected AttendanceService $attendanceService;
 
-    public function __construct(AttendanceService $attendanceService)
-    {
+    protected ScheduleCacheService $scheduleCacheService;
+
+    protected AttendanceProgressService $attendanceProgressService;
+
+    protected TeamProgressService $teamProgressService;
+
+    protected PayrollService $payrollService;
+
+    public function __construct(
+        AttendanceService $attendanceService,
+        ScheduleCacheService $scheduleCacheService,
+        AttendanceProgressService $attendanceProgressService,
+        TeamProgressService $teamProgressService,
+        PayrollService $payrollService
+    ) {
         $this->attendanceService = $attendanceService;
+        $this->scheduleCacheService = $scheduleCacheService;
+        $this->attendanceProgressService = $attendanceProgressService;
+        $this->teamProgressService = $teamProgressService;
+        $this->payrollService = $payrollService;
     }
     /**
      * LIST ATTENDANCE
@@ -82,9 +110,18 @@ class AttendanceController extends Controller
         }
 
         // Filter by date jika ada
-        if ($request->has('date')) {
-            $query->where('date', $request->query('date'));
-        }
+if ($request->filled('date')) {
+
+    $dateTime = Carbon::parse($request->date);
+
+    $dates = [$dateTime->toDateString()];
+
+    if ($dateTime->hour < 7) {
+        $dates[] = $dateTime->copy()->subDay()->toDateString();
+    }
+
+    $query->whereIn('date', $dates);
+}
 
         // Filter by user_id jika ada
         if ($request->has('user_id') && $user->role === 'dev') {
@@ -184,7 +221,91 @@ class AttendanceController extends Controller
                 $attendance = $result['attendance'];
                 $isEdit = $result['is_edit'];
 
-                // 💡 FINAL RESPONSE (Including attendance_id and matched previous format)
+                $this->scheduleCacheService->bumpScheduleSheetCacheVersion($attendance->project_id);
+
+                // 🔄 AUTO RECALCULATE PAYROLL: Trigger payroll recalculation for attendance month
+                // This ensures payroll data is fresh when admin views the sheet
+                try {
+                    $month = $attendance->date->format('Y-m');
+                    $project = Project::findOrFail($attendance->project_id);
+                    $this->payrollService->generateOrRefreshDraft($project, $month, true);
+                } catch (\Throwable $e) {
+                    // Log error but don't block checkin response
+                    \Log::warning("Payroll auto-recalculate failed: {$e->getMessage()}");
+                }
+
+                // Broadcast event setelah check-in berhasil
+                // broadcast(new AttendanceUpdated(
+                //     userId: $attendance->user_id,
+                //     status: 'scan',
+                //     timestamp: now('UTC'),
+                //     assignmentId: $attendance->assignment_id
+                // ))->onQueue('default');
+
+                // 🔄 AUTO CHECKOUT: Dispatch job to auto-checkout 2 hours after assignment end_time
+if (!$isEdit && !$attendance->check_out_at) {
+    $attendance->load('assignment', 'project.organization', 'overtimeLog.workAssignment');
+
+    $assignment = $attendance->assignment;
+    $project = $attendance->project;
+
+    if ($assignment && $project) {
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+        $attendanceDate = $attendance->date->format('Y-m-d');
+
+        $autoCheckoutTime = null;
+        $startTime = null;
+
+        if ($assignment->isOffDuty()) {
+            // 🔵 OFF DUTY (LEMBUR)
+            $otLog = $attendance->overtimeLog;
+
+            if ($otLog?->workAssignment) {
+                $workAsgn = $otLog->workAssignment;
+
+                $startTime = Carbon::createFromFormat(
+                    'Y-m-d H:i:s',
+                    $attendanceDate . ' ' . $workAsgn->start_time,
+                    $projectTimezone
+                );
+
+                $autoCheckoutTime = Carbon::createFromFormat(
+                    'Y-m-d H:i:s',
+                    $attendanceDate . ' ' . $workAsgn->end_time,
+                    $projectTimezone
+                )->addMinutes(120); // ⬅️ +2 JAM
+            }
+        } else {
+            // 🟢 REGULAR SHIFT
+            $startTime = Carbon::createFromFormat(
+                'Y-m-d H:i:s',
+                $attendanceDate . ' ' . $assignment->start_time,
+                $projectTimezone
+            );
+
+            $autoCheckoutTime = Carbon::createFromFormat(
+                'Y-m-d H:i:s',
+                $attendanceDate . ' ' . $assignment->end_time,
+                $projectTimezone
+            )->addMinutes(120); // ⬅️ +2 JAM
+        }
+
+        // 🌙 HANDLE SHIFT MALAM (overnight)
+        if ($startTime && $autoCheckoutTime && $autoCheckoutTime->lessThanOrEqualTo($startTime)) {
+            $autoCheckoutTime->addDay();
+        }
+
+        // 🚀 DISPATCH JOB
+        if ($autoCheckoutTime) {
+            \Log::info('AUTO CHECKOUT SCHEDULED: '.$autoCheckoutTime);
+
+            AutoCheckoutAttendance::dispatch($attendance->id)
+                ->delay($autoCheckoutTime); // ⬅️ LANGSUNG CARBON (JANGAN TIMESTAMP)
+        }
+    }
+}
+
+                // �💡 FINAL RESPONSE (Including attendance_id and matched previous format)
                 return response()->json([
                     'message' => $isEdit ? 'Check-in berhasil diperbarui.' : 'Absen masuk berhasil.',
                     'attendance_id' => $attendance->id,
@@ -225,6 +346,11 @@ class AttendanceController extends Controller
     /**
      * Per-post progress detail endpoint for danru/admin_project/ho (attendance controller)
      * GET /api/posts/{post}/attendance/progress-detail
+     * 
+     * Features:
+     * - Redis caching for performance
+     * - Support for both mobile and static posts
+     * - Static posts don't include scan_detail
      */
     public function progressPostDetail(Request $request, Post $post)
     {
@@ -259,6 +385,9 @@ class AttendanceController extends Controller
             ? Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone)
             : now($projectTimezone);
 
+        $requestUserId = $request->query('user_id') ? (int) $request->query('user_id') : null;
+
+        // ==================== Data Retrieval ====================
         $today = $nowInProjectTz->toDateString();
         $yesterday = $nowInProjectTz->copy()->subDay()->toDateString();
 
@@ -274,12 +403,10 @@ class AttendanceController extends Controller
                 return false;
             }
 
-            // Gunakan date schedule yang sebenarnya (bisa jadi yesterday)
             $schDate = $schedule->date instanceof \Carbon\Carbon ? $schedule->date->format('Y-m-d') : \Carbon\Carbon::parse($schedule->date)->format('Y-m-d');
             $start = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$schedule->assignment->start_time, $projectTimezone);
             $end = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$schedule->assignment->end_time, $projectTimezone);
 
-            // Handle midnight shift: end <= start berarti melewati tengah malam
             if ($end->lessThanOrEqualTo($start)) {
                 $end->addDay();
             }
@@ -287,17 +414,128 @@ class AttendanceController extends Controller
             return $nowInProjectTz->greaterThanOrEqualTo($start) && $nowInProjectTz->lessThan($end);
         })->values();
 
-        if ($activeSchedules->isEmpty()) {
-            // Tidak ada assignment aktif saat ini, fallback ke semua jadwal hari ini.
-            $activeSchedules = $schedulesToday;
+        $activeAssignmentId = null;
+        if ($activeSchedules->isNotEmpty()) {
+            $regularActive = $activeSchedules->filter(fn($s) => ! $s->assignment->isOffDuty())->first();
+            if ($regularActive) {
+                $activeAssignmentId = $regularActive->assignment_id;
+            } else {
+                $activeAssignmentId = $activeSchedules->first()->assignment_id ?? null;
+            }
         }
 
-        // Prioritaskan assignment reguler (P/M) sebagai activeAssignment
-        $regularActive = $activeSchedules->filter(fn($s) => ! $s->assignment->isOffDuty())->first();
-        if ($regularActive) {
-            $activeAssignmentId = $regularActive->assignment_id;
-        } else {
-            $activeAssignmentId = $activeSchedules->first()->assignment_id ?? null;
+        // CACHE KEY: reset cache for each shift by using the active assignment id as part of the key
+        $cacheKey = 'progress_post_' . $post->id . '_' . $nowInProjectTz->format('Y-m-d H:i') . '_shift_' . ($activeAssignmentId ?? 'none');
+        if ($requestUserId) {
+            $cacheKey .= '_user_' . $requestUserId;
+        }
+        $cacheMinutes = 5;
+
+        if ($activeSchedules->isEmpty()) {
+            $postPoints = $post->patrolPoints()->orderBy('sequence_order')->get();
+            $patrolPoints = $postPoints->map(function ($point) {
+                return [
+                    'id' => $point->id,
+                    'name' => $point->name,
+                    'sequence_order' => $point->sequence_order,
+                    'latitude' => $point->latitude,
+                    'longitude' => $point->longitude,
+                    'is_scanned' => false,
+                    'scanned_count' => 0,
+                    'last_scan_time' => null,
+                    'last_scan_note' => null,
+                    'last_scan_user' => null,
+                ];
+            });
+
+            $postProgress = [
+                'post_id' => $post->id,
+                'post_name' => $post->name,
+                'post_type' => $post->type,
+                'project_id' => $post->project_id,
+                'assignment_id' => null,
+                'total_members' => 0,
+                'checked_in_members' => 0,
+                'not_checked_in_members' => 0,
+                'total_patrol_points' => $postPoints->count(),
+                'scanned_patrol_points' => 0,
+                'remaining_patrol_points' => $postPoints->count(),
+                'progress_percentage' => 0,
+            ];
+
+            $responseData = [
+                'user' => null,
+                'post_progress' => $postProgress,
+                'patrol_points' => $patrolPoints,
+                'activity_list' => [],
+                'user_timesheet' => [],
+            ];
+
+            if ($post->type === 'mobile') {
+                $responseData['scan_details'] = [];
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $responseData,
+            ], 200);
+        }
+
+        // Try to get from cache first (for non-static posts or if cache available)
+        $cachedData = Cache::get($cacheKey);
+        if ($cachedData && $post->type === 'mobile') {
+            return response()->json(['success' => true, 'data' => $cachedData], 200);
+        }
+
+        if ($activeSchedules->isEmpty()) {
+            $postPoints = $post->patrolPoints()->orderBy('sequence_order')->get();
+            $patrolPoints = $postPoints->map(function ($point) {
+                return [
+                    'id' => $point->id,
+                    'name' => $point->name,
+                    'sequence_order' => $point->sequence_order,
+                    'latitude' => $point->latitude,
+                    'longitude' => $point->longitude,
+                    'is_scanned' => false,
+                    'scanned_count' => 0,
+                    'last_scan_time' => null,
+                    'last_scan_note' => null,
+                    'last_scan_user' => null,
+                ];
+            });
+
+            $postProgress = [
+                'post_id' => $post->id,
+                'post_name' => $post->name,
+                'post_type' => $post->type,
+                'project_id' => $post->project_id,
+                'assignment_id' => null,
+                'total_members' => 0,
+                'checked_in_members' => 0,
+                'not_checked_in_members' => 0,
+                'total_patrol_points' => $postPoints->count(),
+                'scanned_patrol_points' => 0,
+                'remaining_patrol_points' => $postPoints->count(),
+                'progress_percentage' => 0,
+            ];
+
+            $responseData = [
+                'user' => null,
+                'post_progress' => $postProgress,
+                'patrol_points' => $patrolPoints,
+                'activity_list' => [],
+                'user_timesheet' => [],
+            ];
+
+            if ($post->type === 'mobile') {
+                $responseData['scan_details'] = [];
+                Cache::put($cacheKey, $responseData, now()->addMinutes($cacheMinutes));
+            }
+
+            return response()->json([
+                'success' => true,
+                'data' => $responseData,
+            ], 200);
         }
 
         if ($user->role === 'komandan_regu') {
@@ -315,16 +553,24 @@ class AttendanceController extends Controller
 
         $scheduleIds = $activeSchedules->pluck('id')->all();
 
-        // Data attendance untuk post ini: schedule aktif + siapa pun yang sedang check-in (termasuk O)
         $attendances = Attendance::where(function($q) use ($scheduleIds) {
-                $q->whereIn('schedule_id', $scheduleIds)
-                  ->orWhere(function($sub) {
-                      $sub->whereNotNull('check_in_at')->whereNull('check_out_at');
-                  });
+                $q->whereIn('schedule_id', $scheduleIds);
             })
             ->where('post_id', $post->id)
+            ->when($requestUserId, fn($q) => $q->where('user_id', $requestUserId))
             ->with(['user', 'post', 'schedule.assignment', 'project.organization', 'patrolScans.qrCode.patrolPoint', 'overtimeLog', 'assignment'])
-            ->get();
+            ->get()
+            ->filter(function($att) use ($activeSchedules, $projectTimezone, $nowInProjectTz) {
+                if ($activeSchedules->isEmpty()) {
+                    return false;
+                }
+
+                if (in_array($att->schedule_id, $activeSchedules->pluck('id')->all())) {
+                    return true;
+                }
+
+                return false;
+            });
 
         $totalMembers = $attendances->count();
         $checkedIn = $attendances->whereNotNull('check_in_at')->count();
@@ -337,8 +583,6 @@ class AttendanceController extends Controller
         $allScans = PatrolScan::with(['qrCode.patrolPoint', 'attendance.user', 'photos'])
             ->whereIn('attendance_id', $attendanceIds)
             ->get();
-
-        $pointById = $postPoints->keyBy('id');
 
         $patrolPoints = $postPoints->map(function ($point) use ($allScans) {
             $pointScans = $allScans->filter(function ($scan) use ($point) {
@@ -359,32 +603,8 @@ class AttendanceController extends Controller
             ];
         });
 
-        $scanDetails = $allScans->map(function ($scan) {
-            return [
-                'id' => $scan->id,
-                'attendance_id' => $scan->attendance_id,
-                'patrol_point_id' => $scan->qrCode->patrolPoint->id,
-                'patrol_point_name' => $scan->qrCode->patrolPoint->name,
-                'scan_time' => $scan->scan_time,
-                'note' => $scan->note,
-                'photos' => $scan->photos->map(function ($photo) {
-                    return [
-                        'id' => $photo->id,
-                        'url' => SignedMediaUrl::patrolScanPhoto($photo),
-                        'storage_url_legacy' => Storage::disk('public')->url($photo->photo),
-                        'api_inline_url' => url('/api/patrol-scan-photo/'.$photo->id.'/inline'),
-                    ];
-                }),
-                'scan_user' => [
-                    'id' => $scan->attendance->user_id,
-                    'full_name' => $scan->attendance->user?->full_name,
-                ],
-            ];
-        });
-
         $activityAssignmentId = $request->query('assignment_id');
 
-        // preference: assignment_id dari query > user yg sedang checkin di post > activeAssignmentId
         if (! $activityAssignmentId) {
             $liveAtt = $attendances->whereNotNull('check_in_at')->first();
             if ($liveAtt) {
@@ -435,24 +655,22 @@ class AttendanceController extends Controller
             ->values();
 
         // Timesheet user for checked-in attendance users in this post
-$requestUserId = $request->query('user_id');
+        if ($requestUserId) {
+            $userIds = collect([$requestUserId]);
+        } else {
+            $userIds = $attendances->pluck('user_id')->unique()->values();
+        }
 
-if ($requestUserId) {
-    $userIds = collect([(int) $requestUserId]);
-} else {
-    $userIds = $attendances->pluck('user_id')->unique()->values();
-}
+        $today = Carbon::now($projectTimezone)->toDateString();
+        $yesterday = Carbon::now($projectTimezone)->copy()->subDay()->toDateString();
+        $tomorrow = Carbon::now($projectTimezone)->copy()->addDay()->toDateString();
 
-$today = Carbon::now($projectTimezone)->toDateString();
-$yesterday = Carbon::now($projectTimezone)->copy()->subDay()->toDateString();
-$tomorrow = Carbon::now($projectTimezone)->copy()->addDay()->toDateString();
-
-$allSchedules = Schedule::whereIn('user_id', $userIds)
-    ->whereIn('date', [$yesterday, $today, $tomorrow])
-    ->with(['assignment', 'absence', 'attendance.overtimeLog.workAssignment', 'user'])
-    ->orderBy('date')
-    ->get()
-    ->groupBy('user_id');
+        $allSchedules = Schedule::whereIn('user_id', $userIds)
+            ->whereIn('date', [$yesterday, $today, $tomorrow])
+            ->with(['assignment', 'absence', 'attendance.overtimeLog.workAssignment', 'user'])
+            ->orderBy('date')
+            ->get()
+            ->groupBy('user_id');
 
         $userTimesheets = collect();
         foreach ($allSchedules as $uId => $uSchedules) {
@@ -495,6 +713,7 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
         $postProgress = [
             'post_id' => $post->id,
             'post_name' => $post->name,
+            'post_type' => $post->type,
             'project_id' => $post->project_id,
             'assignment_id' => $activeAssignmentId,
             'total_members' => $totalMembers,
@@ -506,43 +725,107 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
             'progress_percentage' => $postPoints->count() > 0 ? round($patrolPoints->where('is_scanned', true)->count() / $postPoints->count() * 100, 2) : 0,
         ];
 
+        // For static posts, don't include scan_detail
+        $responseData = [
+            'user' => $attendances->whereNotNull('check_in_at')->first() ? [
+                'id' => $attendances->whereNotNull('check_in_at')->first()->user_id,
+                'name' => $attendances->whereNotNull('check_in_at')->first()->user?->full_name,
+                'check_in_at' => $attendances->whereNotNull('check_in_at')->first()->check_in_at,
+                'check_out_at' => $attendances->whereNotNull('check_in_at')->first()->check_out_at,
+                'computed_status' => $attendances->whereNotNull('check_in_at')->first()->computed_status,
+            ] : null,
+            'post_progress' => $postProgress,
+            'patrol_points' => $patrolPoints,
+            'activity_list' => $activityList,
+            'user_timesheet' => $userTimesheets,
+        ];
+
+        // Only include scan_detail for mobile posts
+        if ($post->type === 'mobile') {
+            $scanDetails = $allScans->map(function ($scan) {
+                return [
+                    'id' => $scan->id,
+                    'attendance_id' => $scan->attendance_id,
+                    'patrol_point_id' => $scan->qrCode->patrolPoint->id,
+                    'patrol_point_name' => $scan->qrCode->patrolPoint->name,
+                    'scan_time' => $scan->scan_time,
+                    'note' => $scan->note,
+                    'photos' => $scan->photos->map(function ($photo) {
+                        return [
+                            'id' => $photo->id,
+                            'url' => SignedMediaUrl::patrolScanPhoto($photo),
+                            'storage_url_legacy' => Storage::disk('public')->url($photo->photo),
+                            'api_inline_url' => url('/api/patrol-scan-photo/'.$photo->id.'/inline'),
+                        ];
+                    }),
+                    'scan_user' => [
+                        'id' => $scan->attendance->user_id,
+                        'full_name' => $scan->attendance->user?->full_name,
+                    ],
+                ];
+            });
+            $responseData['scan_details'] = $scanDetails;
+        }
+
+        // Cache the response for mobile posts only
+        if ($post->type === 'mobile') {
+            Cache::put($cacheKey, $responseData, now()->addMinutes($cacheMinutes));
+        }
+
         return response()->json([
             'success' => true,
-            'data' => [
-                'user' => $attendances->whereNotNull('check_in_at')->first() ? [
-                    'id' => $attendances->whereNotNull('check_in_at')->first()->user_id,
-                    'name' => $attendances->whereNotNull('check_in_at')->first()->user?->full_name,
-                    'check_in_at' => $attendances->whereNotNull('check_in_at')->first()->check_in_at,
-                    'check_out_at' => $attendances->whereNotNull('check_in_at')->first()->check_out_at,
-                    'computed_status' => $attendances->whereNotNull('check_in_at')->first()->computed_status,
-                ] : null,
-                'post_progress' => $postProgress,
-                'patrol_points' => $patrolPoints,
-                'scan_details' => $scanDetails,
-                'activity_list' => $activityList,
-                'user_timesheet' => $userTimesheets,
-                // 'members' => $attendances->map(function ($attendance) {
-                //     return [
-                //         'attendance_id' => $attendance->id,
-                //         'user_id' => $attendance->user_id,
-                //         'name' => $attendance->user?->full_name,
-                //         'check_in_at' => $attendance->check_in_at,
-                //         'check_out_at' => $attendance->check_out_at,
-                //         'computed_status' => $attendance->computed_status,
-                //         'activity_list' => $attendance->patrolScans->map(function ($scan) {
-                //             return [
-                //                 'id' => $scan->id,
-                //                 'patrol_point_name' => $scan->qrCode?->patrolPoint?->name,
-                //                 'scan_time' => $scan->scan_time,
-                //                 'note' => $scan->note,
-                //             ];
-                //         }),
-                //     ];
-                // }),
-            ],
+            'data' => $responseData,
         ], 200);
     }
 
+   
+
+    public function progressall(Request $request)
+    {   
+        $this->authorize('progress', Attendance::class);
+        $this->authorize('viewAny', Attendance::class);
+
+        $user = Auth::user();
+        $postId = $request->query('post_id');
+        $danruId = $request->query('danru_id');
+        $userId = $request->query('user_id');
+
+        if (!$postId && !$danruId) {
+            return response()->json(['message' => 'Harus kirim post_id atau danru_id'], 422);
+        }
+
+        if ($postId && $danruId) {
+            return response()->json(['message' => 'Gunakan salah satu saja'], 422);
+        }
+
+        if ($user->role === 'ho') {
+            $projectId = (int) $request->query('project_id', 0);
+            if ($projectId <= 0) {
+                return response()->json(['message' => 'project_id wajib'], 422);
+            }
+        } else {
+            $projectId = (int) ($user->project_id ?? 0);
+        }
+
+        $project = Project::with('organization')->find($projectId);
+        if (! $project) {
+            return response()->json(['message' => 'Project tidak ditemukan'], 404);
+        }
+
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+        $currentTime = $request->query('current_time');
+
+        $response = $this->attendanceProgressService->progressAll(
+            $projectId,
+            $postId,
+            $danruId,
+            $userId,
+            $currentTime,
+            $projectTimezone
+        );
+
+        return response()->json($response, 200);
+    }
     /**
      * DELETE /api/attendances/check-in/{attendance}
      * Hapus attendance jika check-in salah input.
@@ -559,12 +842,16 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
 
         if ($attendance->check_out_at) {
             return response()->json([
-                'message' => 'Attendance sudah check-out, tidak dapat dihapus.',
+                'message' => 'anda sudah check-out.',
             ], 409);
         }
 
+        $projectId = $attendance->project_id;
+
         // Hapus attendance (beserta data turunan scan via FK jika ada)
         $attendance->delete();
+
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($projectId);
 
         return response()->json([
             'message' => 'Check-in berhasil dihapus.',
@@ -576,6 +863,7 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
      * - Anggota: tidak memiliki akses (dibatasi policy).
      * - Danru (komandan_regu) & admin_project: hanya project miliknya.
      * - HO: bisa pilih `project_id` pada request body/query.
+     * Optional: `attendance_id` untuk filter danru tertentu.
      */
     private function progressTeamByPost(Request $request)
     {
@@ -607,335 +895,24 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
             ], 404);
         }
 
-        $projectTimezone = $project?->timezone ?? $project?->organization?->timezone ?? 'Asia/Jakarta';
-
-        $rules = [
+        $validator = Validator::make($request->all(), [
             'current_time' => 'sometimes|date_format:Y-m-d H:i:s',
-        ];
-        $validator = Validator::make($request->all(), $rules);
+        ]);
         if ($validator->fails()) {
             return response()->json($validator->errors(), 422);
         }
 
-        $nowInProjectTz = $request->filled('current_time')
-            ? Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone)
-            : now($projectTimezone);
+        $response = $this->teamProgressService->getTeamProgress(
+            $user,
+            $project,
+            $request->query('current_time'),
+            $request->query('attendance_id') ? (int) $request->query('attendance_id') : null
+        );
 
-        $today = $nowInProjectTz->toDateString();
-
-        $yesterday = $nowInProjectTz->copy()->subDay()->toDateString();
-
-        // Ambil schedule project untuk hari ini dan kemarin (mendukung lintas malam)
-        $schedulesToday = Schedule::where('project_id', $projectId)
-            ->whereIn('date', [$today, $yesterday])
-            ->with(['assignment', 'user'])
-            ->get();
-
-        // Filter schedule berdasarkan assignment yang sedang aktif saat ini
-        $activeSchedules = $schedulesToday->filter(function ($schedule) use ($nowInProjectTz, $projectTimezone) {
-            if (! $schedule->assignment) {
-                return false;
-            }
-
-            // Gunakan date schedule yang sebenarnya (bisa jadi yesterday)
-            $schDate = $schedule->date instanceof \Carbon\Carbon ? $schedule->date->format('Y-m-d') : \Carbon\Carbon::parse($schedule->date)->format('Y-m-d');
-            $start = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$schedule->assignment->start_time, $projectTimezone);
-            $end = \Carbon\Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$schedule->assignment->end_time, $projectTimezone);
-
-            // Handle midnight shift: end <= start berarti melewati tengah malam
-            if ($end->lessThanOrEqualTo($start)) {
-                $end->addDay();
-            }
-
-            return $nowInProjectTz->greaterThanOrEqualTo($start) && $nowInProjectTz->lessThan($end);
-        })->values();
-
-        // Ambil daftar post (slot progress tim)
-        $posts = Post::where('project_id', $projectId)
-            ->where('type', 'mobile')
-            ->orderBy('id')
-            ->get(['id', 'name', 'type']);
-
-        if ($activeSchedules->isEmpty()) {
-            $postSlots = $posts->map(function ($post) {
-                return [
-                    'users' => [],
-
-                    'schedule' => null,
-                    'post' => [
-                        'post_id' => (int) $post->id,
-                        'name' => $post->name,
-                        'type' => $post->type,
-                    ],
-                    'attendance' => null,
-                    'checkin_status' => 'NOT_YET',
-                    'scan_progress' => app(PatrolScanService::class)->getProgressByPost($post->id),
-                ];
-            })->values();
-
-            $total = $posts->count();
-
-            return response()->json([
-                'message' => 'Tidak ada assignment aktif saat ini.',
-                'project_id' => (int) $projectId,
-                'date' => $today,
-                'time' => $nowInProjectTz->format('H:i:s'),
-                'timezone' => $projectTimezone,
-                'assignment' => null,
-                'danru' => null,
-                'progress' => [
-                    'total_posts' => $total,
-                    'posts_covered' => 0,
-                    'not_covered' => $total,
-                    'total_users_checked_in' => 0,
-                    'total_users_scheduled' => 0,
-                    'percentage' => 0,
-                ],
-                'members' => $postSlots,
-            ], 200);
-        }
-
-        // --- Filter Visibility berdasarkan Role Login ---
-        $visibleRoles = [];
-        if ($user->role === 'ho') {
-            $visibleRoles = ['admin_project', 'komandan_regu', 'anggota'];
-        } elseif ($user->role === 'admin_project') {
-            $visibleRoles = ['komandan_regu', 'anggota'];
-        } elseif ($user->role === 'komandan_regu') {
-            $visibleRoles = ['anggota', 'komandan_regu'];
-        }
-
-        // Terapkan visibility filter ke schedules
-        $activeSchedules = $activeSchedules->filter(function($s) use ($visibleRoles) {
-            return $s->user && in_array($s->user->role, $visibleRoles);
-        })->values();
-
-        // Asumsi utama: pada satu waktu hanya ada 1 assignment regular (P/M) dan 1 assignment lembur (O) aktif
-
-        // Asumsi utama: pada satu waktu hanya ada 1 assignment regular (P/M) dan 1 assignment lembur (O) aktif
-        // Prioritaskan assignment reguler (P/M) untuk ditampilkan sebagai activeAssignment
-        $regularActive = $activeSchedules->filter(fn($s) => ! $s->assignment->isOffDuty())->first();
-        if ($regularActive) {
-            $activeAssignment = $regularActive->assignment;
-        } else {
-            $activeAssignment = $activeSchedules->first()->assignment;
-        }
-
-        // Ambil SEMUA schedule_id yang sedang aktif (bisa P dan O secara bersamaan)
-        $scheduleIds = $activeSchedules->pluck('id')->all();
-
-        // Attendance untuk module progress: ambil dari schedule aktif,
-        // DITAMBAH siapa saja yang sedang "live check-in" di project ini untuk mengcover O yang lintas midnight
-        $attendances = Attendance::where(function($q) use ($scheduleIds) {
-                $q->whereIn('schedule_id', $scheduleIds)
-                  ->orWhere(function($sub) {
-                      $sub->whereNotNull('check_in_at')->whereNull('check_out_at');
-                  });
-            })
-            ->whereHas('schedule', function($q) use ($projectId) {
-                $q->where('project_id', $projectId);
-            })
-            ->with(['user', 'post', 'assignment', 'overtimeLog'])
-            ->get();
-
-        // Terapkan visibility filter ke attendances (Hanya hitung role yang sesuai instruksi)
-        $attendances = $attendances->filter(function($a) use ($visibleRoles) {
-            return $a->user && in_array($a->user->role, $visibleRoles);
-        })->values();
-
-        $patrolService = app(PatrolScanService::class);
-
-        // Commander (danru) progress (komandan_regu tidak punya post_id, scan berasal dari static posts project)
-        $commanderAttendances = $attendances->filter(function ($attendance) {
-            return $attendance->user && $attendance->user->role === 'komandan_regu';
-        });
-
-        $commanderScanProgress = $patrolService->getMergedCommanderProgress($project, $commanderAttendances);
-
-        // Group by post_id
-        $attendancesByPostId = $attendances
-            ->filter(fn($a) => ! is_null($a->post_id) && $a->check_in_at)
-            ->groupBy('post_id');
-
-        // Build slot: 1 slot per POST (bisa berisi multiple users)
-        $postSlots = collect();
-        $totalUsersCheckedIn = 0;
-
-        foreach ($posts as $post) {
-            $postAttendances = $attendancesByPostId->get($post->id, collect());
-
-            if ($postAttendances->isEmpty()) {
-                $postSlots->push([
-                    'users'          => [],
-
-                    'schedule'       => null,
-                    'post'           => ['post_id' => (int) $post->id, 'name' => $post->name, 'type' => $post->type],
-                    'attendance'     => null,
-                    'checkin_status' => 'NOT_YET',
-                    'scan_progress'  => $patrolService->getProgressByPost($post->id),
-                ]);
-                continue;
-            }
-
-            // Merged scan progress untuk SEMUA user di post ini
-            $scanProgress = $patrolService->getMergedScanProgress($postAttendances, $post->id);
-            
-            $mappedUsers = $postAttendances->map(function($att) {
-                return [
-                    'id'              => (int) $att->user_id,
-                    'full_name'       => $att->user?->full_name,
-                    'role'            => $att->user?->role,
-                    'attendance_id'   => (int) $att->id,
-                    'check_in_at'     => $att->check_in_at?->toISOString(),
-                    'assignment_code' => $att->assignment?->code,
-                ];
-            })->values();
-
-            $totalUsersCheckedIn += $mappedUsers->count();
-            $firstAtt = $postAttendances->first();
-
-            $postSlots->push([
-                'users'          => $mappedUsers,
-                // 'user'           => $mappedUsers->first(), // Fallback for single user logic
-                // 'schedule'       => ['id' => (int) $firstAtt->schedule_id],
-                'post'           => ['post_id' => (int) $post->id, 'name' => $post->name, 'type' => $post->type],
-                // 'attendance'     => [
-                //     'id'             => (int) $firstAtt->id,
-                //     'post_id'        => (int) $firstAtt->post_id,
-                //     'check_in_at'    => $firstAtt->check_in_at?->toISOString(),
-                //     'computed_status'=> $firstAtt->computed_status,
-                // ],
-                // 'checkin_status' => 'CHECKED_IN',
-                'scan_progress'  => $scanProgress,
-            ]);
-        }
-
-        $postSlots = $postSlots->values();
-
-        // Tambahkan Danru yang sudah check-in ke total hitungan
-        $totalUsersCheckedIn += $commanderAttendances->filter(fn($a) => $a->check_in_at)->count();
-
-        $totalPostCount = $posts->count();
-        $postsCovered   = $attendancesByPostId->count();
-        $notCovered     = max(0, $totalPostCount - $postsCovered);
-        $percentage     = $totalPostCount > 0 ? round(($postsCovered / $totalPostCount) * 100, 2) : 0;
-        
-        $totalUsersScheduled = $activeSchedules->count();
-
-        return response()->json([
-            'message' => 'Progress assignment aktif berhasil diambil.',
-            'project_id' => (int) $projectId,
-            'date' => $today,
-            'time' => $nowInProjectTz->format('H:i:s'),
-            'timezone' => $projectTimezone,
-            'assignment' => $activeAssignment ? [
-                'id' => (int) $activeAssignment->id,
-                'name' => $activeAssignment->name,
-                'start_time' => $activeAssignment->start_time,
-                'end_time' => $activeAssignment->end_time,
-            ] : null,
-            'danru' => [
-                'attendance_id' => $commanderAttendances->first()?->id,
-                'check_in_at' => $commanderAttendances->first()?->check_in_at?->toISOString(),
-                'computed_status' => $commanderAttendances->first()?->computed_status,
-                'scan_progress' => $commanderScanProgress,
-                'attendances' => $commanderAttendances->map(fn($a) => [
-                    'id' => $a->id,
-                    'user_id' => $a->user_id,
-                    'full_name' => $a->user?->full_name,
-                    'check_in_at' => $a->check_in_at?->toISOString(),
-                    'computed_status' => $a->computed_status,
-                ])->values(),
-            ],
-            'progress' => [
-                'total_posts' => $totalPostCount,
-                'posts_covered' => $postsCovered,
-                'not_covered' => $notCovered,
-                'total_users_checked_in' => $totalUsersCheckedIn,
-                'total_users_scheduled' => $totalUsersScheduled, // Tambahan sesuai request
-                'percentage' => $percentage,
-            ],
-            'members' => $postSlots,
-        ], 200);
+        return response()->json($response, 200);
     }
 
-    /**
-     * PATROL SCAN
-     * 🔐 Concurrency Safety: Redis Lock ensures one scan per QR/Attendance.
-     */
-    public function patrolScan(Request $request)
-    {
-        $validator = Validator::make($request->all(), [
-            'attendance_id' => 'required|integer',
-            'qr_code' => 'required_without:patrol_point_id|string',
-            'patrol_point_id' => 'required_without:qr_code|exists:patrol_points,id',
-            'scan_latitude' => 'required|numeric|between:-90,90',
-            'scan_longitude' => 'required|numeric|between:-180,180',
-            'scan_altitude' => 'nullable|numeric',
-            'note' => 'nullable|string|max:500',
-            'current_time' => 'required|date_format:Y-m-d H:i:s', // Device time
-            'photos' => 'required|array|min:4',
-            'photos.*' => 'required|image|max:5120',
-        ]);
 
-        if ($validator->fails()) return response()->json($validator->errors(), 422);
-
-        $user = Auth::user();
-        $attendance = Attendance::where('id', $request->attendance_id)
-            ->where('user_id', $user->id)
-            ->with(['project.organization', 'post', 'user'])
-            ->first();
-
-        if (! $attendance || ! $attendance->check_in_at || $attendance->check_out_at) {
-            return response()->json(['message' => 'Attendance tidak valid atau sudah check-out.'], 400);
-        }
-
-        $this->authorize('scanForAttendance', [PatrolScan::class, $attendance]);
-
-        $qrCode = $request->qr_code;
-        if (! $qrCode && $request->patrol_point_id) {
-            $point = PatrolPoint::with('qrCode')->find($request->patrol_point_id);
-            if (!$point?->qrCode) return response()->json(['message' => 'QR code tidak ditemukan.'], 404);
-            $qrCode = $point->qrCode->code;
-        }
-
-        $projectTimezone = $attendance->project->timezone ?? $attendance->project->organization->timezone ?? 'Asia/Jakarta';
-        $scanTime = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone)->setTimezone('UTC');
-
-        // 🔐 ATOMIC LOCK (Redis) to prevent duplicate scans
-        $lockKey = 'scan_lock_' . $attendance->id . '_' . md5($qrCode);
-        try {
-            return Cache::lock($lockKey, 10)->block(5, function () use ($request, $attendance, $qrCode, $scanTime) {
-                $service = app(PatrolScanService::class);
-                $result = $service->createScan(
-                    $attendance,
-                    $qrCode,
-                    (float) $request->scan_latitude,
-                    (float) $request->scan_longitude,
-                    $request->scan_altitude !== null ? (float) $request->scan_altitude : null,
-                    $request->note,
-                    $scanTime,
-                    $request->file('photos') ?? []
-                );
-
-                if (! $result['success']) {
-                    return response()->json(['success' => false, 'errors' => $result['errors']], 422);
-                }
-
-                return response()->json([
-                    'success' => true,
-                    'message' => $result['message'],
-                    'data' => [
-                        'scan' => $result['scan']->load('photos', 'qrCode.patrolPoint'),
-                        'patrol_point' => $result['patrolPoint'],
-                        'progress' => $service->getScanProgress($attendance),
-                    ],
-                ], 201);
-            });
-        } catch (\Illuminate\Contracts\Cache\LockTimeoutException $e) {
-            return response()->json(['message' => 'Scan sedang diproses. Mohon tunggu sejenak.'], 423);
-        }
-    }
 
     public function checkOut(Request $request)
     {
@@ -979,7 +956,7 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
                 ->first();
 
             return response()->json([
-                'message' => 'Attendance tidak valid',
+                'message' => 'Anda sudah absen pulang',
                 'active_attendance_id' => $activeAttendance ? (int) $activeAttendance->id : null,
             ], 404);
         }
@@ -1203,6 +1180,141 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
     }
 
     /**
+     * AUTO CHECKOUT - triggered by scheduled job or client request
+     * POST /api/attendances/auto-checkout
+     * Automatically checkout 2 hours after assignment end_time
+     */
+    public function autoCheckout(Request $request)
+    {
+        $validator = Validator::make($request->all(), [
+            'attendance_id' => 'required|integer|exists:attendances,id',
+            'current_time' => 'required|date_format:Y-m-d H:i:s',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json($validator->errors(), 422);
+        }
+
+        $user = Auth::user();
+        $attendance = Attendance::where('id', $request->attendance_id)
+            ->where('user_id', $user->id)
+            ->with('assignment', 'post', 'project.organization', 'overtimeLog.workAssignment')
+            ->first();
+
+        if (!$attendance) {
+            return response()->json(['message' => 'Attendance tidak ditemukan.'], 404);
+        }
+
+        // Guard: Sudah check-out sebelumnya
+        if ($attendance->check_out_at) {
+            return response()->json(['message' => 'Attendance sudah check-out.'], 409);
+        }
+
+        // Guard: Belum check-in
+        if (!$attendance->check_in_at) {
+            return response()->json(['message' => 'Attendance belum check-in.'], 400);
+        }
+
+        $assignment = $attendance->assignment;
+        $project = $attendance->project;
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+
+        // Validasi waktu: pastikan sudah 2 jam lebih dari end_time
+        $deviceTime = Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $projectTimezone)->setTimezone('UTC');
+        
+        $isOffDutyAssignment = $assignment->isOffDuty();
+        $targetEndTime = null;
+
+        if ($isOffDutyAssignment) {
+            $otLog = $attendance->overtimeLog;
+            if ($otLog?->workAssignment) {
+                $workDate = $attendance->date->format('Y-m-d');
+                $targetEndTime = Carbon::createFromFormat('Y-m-d H:i:s', $workDate . ' ' . $otLog->workAssignment->end_time, $projectTimezone)->setTimezone('UTC');
+                
+                if ($targetEndTime->lessThanOrEqualTo(Carbon::createFromFormat('Y-m-d H:i:s', $workDate . ' ' . $otLog->workAssignment->start_time, $projectTimezone)->setTimezone('UTC'))) {
+                    $targetEndTime->addDay();
+                }
+            }
+        } else {
+            $workDate = $attendance->date->format('Y-m-d');
+            $targetEndTime = Carbon::createFromFormat('Y-m-d H:i:s', $workDate . ' ' . $assignment->end_time, $projectTimezone)->setTimezone('UTC');
+            
+            $startTime = Carbon::createFromFormat('Y-m-d H:i:s', $workDate . ' ' . $assignment->start_time, $projectTimezone)->setTimezone('UTC');
+            if ($targetEndTime->lessThanOrEqualTo($startTime)) {
+                $targetEndTime->addDay();
+            }
+        }
+
+        // Calculate 2 hours after target end time
+        $autoCheckoutTime = $targetEndTime->copy()->addHours(2);
+
+        // Validasi: device time harus >= 2 jam setelah end_time
+        if ($deviceTime->isBefore($autoCheckoutTime)) {
+            return response()->json([
+                'message' => 'Belum waktunya auto checkout.',
+                'auto_checkout_at' => $autoCheckoutTime->copy()->setTimezone($projectTimezone)->format('H:i:s'),
+                'current_time' => $deviceTime->copy()->setTimezone($projectTimezone)->format('H:i:s'),
+                'timezone' => $projectTimezone,
+            ], 403);
+        }
+
+        // Set default checkout location to project location (or checkin location)
+        $checkoutLat = $attendance->checkout_lat ?? $attendance->checkin_lat ?? $project->location_latitude;
+        $checkoutLng = $attendance->checkout_lng ?? $attendance->checkin_lng ?? $project->location_longitude;
+
+        // Calculate overtime
+        $overtimeMinutes = 0;
+        $overtimeStatus = 'NONE';
+        $hasOffDayOvertime = false;
+
+        if ($isOffDutyAssignment) {
+            $otLog = $attendance->overtimeLog;
+            $overtimeMinutes = (int) ($otLog?->workAssignment?->getDurationInMinutes() ?? 0);
+            $overtimeStatus = $otLog ? 'APPROVED' : 'NONE';
+            $hasOffDayOvertime = (bool) $otLog;
+        } else {
+            if ($deviceTime->isAfter($targetEndTime)) {
+                $overtimeMinutes = $deviceTime->diffInMinutes($targetEndTime);
+                $overtimeStatus = 'NONE';
+            }
+        }
+
+        // Update computed_status
+        $computedStatus = $attendance->computed_status;
+        if (($hasOffDayOvertime || $overtimeMinutes > 0) && strpos($computedStatus, 'LEMBUR') === false) {
+            $computedStatus .= ' LEMBUR';
+        }
+
+        // Update attendance dengan auto-checkout
+        $attendance->forceFill([
+            'check_out_at' => $deviceTime,
+            'checkout_lat' => $checkoutLat,
+            'checkout_lng' => $checkoutLng,
+            'overtime_minutes' => $overtimeMinutes,
+            'overtime_status' => $overtimeStatus,
+            'computed_status' => $computedStatus,
+        ])->save();
+
+        $attendance->refresh();
+
+        // Invalidate project reports cache
+        Cache::forget('project_reports_' . $project->id . '_v');
+        Cache::forever('project_reports_' . $project->id . '_v', time());
+
+        $deviceTimeInProjectTz = $deviceTime->copy()->setTimezone($projectTimezone);
+
+        return response()->json([
+            'message' => 'Auto checkout berhasil.',
+            'date' => $attendance->date->format('Y-m-d'),
+            'time' => $deviceTimeInProjectTz->format('H:i:s'),
+            'timezone' => $projectTimezone,
+            'status' => $computedStatus,
+            'overtime_minutes' => (int) $overtimeMinutes,
+            'data' => $this->formatAttendanceResponse($attendance->fresh()),
+        ], 200);
+    }
+
+    /**
      * TIMESHEET
      * GET /attendances/timesheet
      * Menampilkan riwayat schedule dan attendance selama 1 bulan
@@ -1264,64 +1376,70 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
             'total_hari' => count($dates),
             'schedule_kerja' => 0,
             'kode_kehadiran' => 0,
+            'telat' => 0,
             'tidak_absen' => 0,
         ];
-    
+
         foreach ($dates as $currentDate) {
             $dateStr = $currentDate->toDateString();
-    
+
             $schedule = $schedules->get($dateStr);
             $attendance = $attendances->get($dateStr);
-    
+
             $scheduleCode = $schedule?->assignment?->code;
             $isOffSchedule = $schedule ? $schedule->assignment->isOffDuty() : true;
-    
+
             $attendanceCodeStr = null;
             $checkIn = '--:--';
             $checkOut = '--:--';
             $statusStr = '';
-    
+
             if ($schedule && ! $isOffSchedule) {
                 $summary['schedule_kerja']++;
             }
-    
+
             if ($attendance) {
                 $summary['kode_kehadiran']++;
-    
+
                 if ($isOffSchedule) {
-                    $workCode = $attendance->overtimeLog?->workAssignment?->code ?? $attendance->assignment?->code;
-                    $attendanceCodeStr = $scheduleCode.' / '.$workCode;
+                    $attendanceCodeStr = $attendance->overtimeLog?->workAssignment?->code ?? $attendance->assignment?->code;
                 } else {
                     $attendanceCodeStr = $attendance->assignment?->code ?? $scheduleCode;
                 }
-    
+
                 $checkIn = $attendance->check_in_at ? $attendance->check_in_at->setTimezone($timezone)->format('H:i') : '--:--';
                 $checkOut = $attendance->check_out_at ? $attendance->check_out_at->setTimezone($timezone)->format('H:i') : '--:--';
-    
-                $statusStr = in_array($attendance->computed_status, ['HADIR TELAT', 'HADIR TELAT LEMBUR'])
-                    ? 'Telat'
-                    : 'Tepat Waktu';
-    
+
+                if (in_array($attendance->computed_status, ['HADIR TELAT', 'HADIR TELAT LEMBUR'])) {
+                    $statusStr = 'Telat';
+                    $summary['telat']++;
+                } else {
+                    $statusStr = 'Tepat Waktu';
+                }
+
             } elseif ($schedule && $schedule->absence) {
                 $statusStr = $schedule->absence->label;
-                $attendanceCodeStr = $scheduleCode.' / '.$schedule->absence->absence_type;
-    
+                $attendanceCodeStr = $schedule->absence->absence_type;
+                // Count absence as tidak_absen
+                if (in_array($schedule->absence->absence_type, ['S', 'I', 'C', 'A'])) {
+                    $summary['tidak_absen']++;
+                }
             } else {
-                if ($currentDate->greaterThanOrEqualTo($now->copy()->startOfDay())) {
-                    $statusStr = 'Belum Absen';
+                if ($schedule && ! $isOffSchedule) {
+                    $statusStr = 'Tidak Absen';
+                    $summary['tidak_absen']++;
                 } else {
-                    if ($schedule && ! $isOffSchedule) {
-                        $statusStr = 'Tidak Absen';
-                        $summary['tidak_absen']++;
-                    } else {
-                        $statusStr = 'Libur';
-                    }
+                    $statusStr = 'Libur';
                 }
             }
     
+            $isPastOrToday = $currentDate->lte($now->toDateString());
+
             if (! $attendanceCodeStr) {
-                if (in_array($statusStr, ['Belum Absen', 'Tidak Absen', 'Libur'])) {
-                    $attendanceCodeStr = $scheduleCode ?? '-';
+                if ($scheduleCode === 'o' && $isPastOrToday) {
+                    $attendanceCodeStr = 'o';
+                } else {
+                    $attendanceCodeStr = '-';
                 }
             }
     
@@ -1354,138 +1472,326 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
         ]);
     }
 
-//     public function timesheetThreeDays(Request $request)
-// {
-//     $user = Auth::user();
+    public function timesheetThreeDays(Request $request)
+    {
+        $user = Auth::user();
+    
+        $project = $user->project()->with('organization')->first();
+        $timezone = $project?->timezone ?? $project?->organization?->timezone ?? 'Asia/Jakarta';
+    
+        // ambil waktu dari device, fallback server
+        $now = $request->filled('current_time')
+            ? Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $timezone)
+            : now($timezone);
+    
+        // =======================
+        // RANGE 3 HARI
+        // kemarin - hari ini - besok
+        // =======================
+        $dates = [
+            $now->copy()->subDay(),
+            $now->copy(),
+            $now->copy()->addDay(),
+        ];
+    
+        $dateStrings = collect($dates)
+            ->map(fn($d) => $d->toDateString())
+            ->toArray();
+    
+        // =======================
+        // QUERY
+        // =======================
+        $schedules = Schedule::where('user_id', $user->id)
+            ->whereIn('date', $dateStrings)
+            ->with(['assignment', 'absence'])
+            ->get()
+            ->keyBy(fn($s) => Carbon::parse($s->date)->format('Y-m-d'));
+    
+        $attendances = Attendance::where('user_id', $user->id)
+            ->whereIn('date', $dateStrings)
+            ->with(['assignment', 'overtimeLog.workAssignment'])
+            ->get()
+            ->keyBy(fn($a) => Carbon::parse($a->date)->format('Y-m-d'));
+    
+        $history = [];
+    
+        $summary = [
+            'total_hari' => 3,
+            'schedule_kerja' => 0,
+            'kode_kehadiran' => 0,
+            'telat' => 0,
+            'tidak_absen' => 0,
+        ];
+    
+        foreach ($dates as $currentDate) {
+            $dateStr = $currentDate->toDateString();
+    
+            $schedule = $schedules->get($dateStr);
+            $attendance = $attendances->get($dateStr);
+    
+            $scheduleCode = $schedule?->assignment?->code;
+            $isOffSchedule = $schedule ? $schedule->assignment->isOffDuty() : true;
+    
+            $attendanceCodeStr = '-';
+            $checkIn = '--:--';
+            $checkOut = '--:--';
+            $statusStr = '';
+    
+            if ($schedule && !$isOffSchedule) {
+                $summary['schedule_kerja']++;
+            }
+    
+            if ($attendance) {
+                $summary['kode_kehadiran']++;
 
-//     $project = $user->project()->with('organization')->first();
-//     $timezone = $project?->timezone ?? $project?->organization?->timezone ?? 'Asia/Jakarta';
+                if ($isOffSchedule) {
+                    $attendanceCodeStr =
+                        $attendance->overtimeLog?->workAssignment?->code
+                        ?? $attendance->assignment?->code
+                        ?? '-';
+                } else {
+                    $attendanceCodeStr =
+                        $attendance->assignment?->code
+                        ?? $scheduleCode
+                        ?? '-';
+                }
 
-//     $now = $request->filled('current_time')
-//         ? Carbon::createFromFormat('Y-m-d H:i:s', $request->current_time, $timezone)
-//         : now($timezone);
+                $checkIn = $attendance->check_in_at
+                    ? $attendance->check_in_at->copy()->setTimezone($timezone)->format('H:i')
+                    : '--:--';
 
-//     $today = $now->toDateString();
-//     $yesterday = $now->copy()->subDay()->toDateString();
-//     $tomorrow = $now->copy()->addDay()->toDateString();
+                $checkOut = $attendance->check_out_at
+                    ? $attendance->check_out_at->copy()->setTimezone($timezone)->format('H:i')
+                    : '--:--';
 
-//     $dates = [$yesterday, $today, $tomorrow];
+                if (in_array($attendance->computed_status, [
+                    'HADIR TELAT',
+                    'HADIR TELAT LEMBUR',
+                ])) {
+                    $statusStr = 'Telat';
+                    $summary['telat']++;
+                } else {
+                    $statusStr = 'Tepat Waktu';
+                }
 
-//     // 1. Get schedules
-//     $schedules = Schedule::where('user_id', $user->id)
-//         ->whereIn('date', $dates)
-//         ->with(['assignment', 'absence'])
-//         ->get()
-//         ->keyBy(fn ($s) => $s->date instanceof \Carbon\Carbon 
-//             ? $s->date->format('Y-m-d') 
-//             : \Carbon\Carbon::parse($s->date)->format('Y-m-d')
-//         );
+            } elseif ($schedule && $schedule->absence) {
+    
+                $statusStr = $schedule->absence->label;
+                $attendanceCodeStr = $schedule->absence->absence_type;
+    
+                if (in_array($schedule->absence->absence_type, ['S', 'I', 'C', 'A'])) {
+                    $summary['tidak_absen']++;
+                }
+    
+            } else {
+    
+                if ($schedule && !$isOffSchedule) {
+                    $statusStr = 'Tidak Absen';
+                    $summary['tidak_absen']++;
+                } else {
+                    $statusStr = 'Libur';
+                }
+            }
+    
+            $isPastOrToday = $currentDate->lte($now->toDateString());
 
-//     // 2. Get attendances
-//     $attendances = Attendance::where('user_id', $user->id)
-//         ->whereIn('date', $dates)
-//         ->with(['assignment', 'overtimeLog.workAssignment'])
-//         ->get()
-//         ->keyBy(fn ($a) => $a->date instanceof \Carbon\Carbon 
-//             ? $a->date->format('Y-m-d') 
-//             : \Carbon\Carbon::parse($a->date)->format('Y-m-d')
-//         );
-
-//     $history = [];
-//     $nowForStatus = now($timezone);
-
-//     foreach ($dates as $dateStr) {
-//         $currentDate = Carbon::parse($dateStr, $timezone);
-
-//         $schedule = $schedules->get($dateStr);
-//         $attendance = $attendances->get($dateStr);
-
-//         $scheduleCode = $schedule?->assignment?->code;
-//         $isOffSchedule = $schedule ? $schedule->assignment->isOffDuty() : true;
-
-//         $attendanceCodeStr = null;
-//         $checkIn = '--:--';
-//         $checkOut = '--:--';
-//         $statusStr = '';
-
-//         if ($attendance) {
-//             if ($isOffSchedule) {
-//                 $workCode = $attendance->overtimeLog?->workAssignment?->code ?? $attendance->assignment?->code;
-//                 $attendanceCodeStr = $scheduleCode.' / '.$workCode;
-//             } else {
-//                 $attendanceCodeStr = $attendance->assignment?->code ?? $scheduleCode;
-//             }
-
-//             $checkIn = $attendance->check_in_at 
-//                 ? $attendance->check_in_at->setTimezone($timezone)->format('H:i') 
-//                 : '--:--';
-
-//             $checkOut = $attendance->check_out_at 
-//                 ? $attendance->check_out_at->setTimezone($timezone)->format('H:i') 
-//                 : '--:--';
-
-//             $statusStr = in_array($attendance->computed_status, ['HADIR TELAT', 'HADIR TELAT LEMBUR'])
-//                 ? 'Telat'
-//                 : 'Tepat Waktu';
-
-//         } elseif ($schedule && $schedule->absence) {
-//             $statusStr = $schedule->absence->label;
-//             $attendanceCodeStr = $scheduleCode.' / '.$schedule->absence->absence_type;
-
-//         } else {
-//             if ($currentDate->greaterThanOrEqualTo($nowForStatus->copy()->startOfDay())) {
-//                 $statusStr = 'Belum Absen';
-//             } else {
-//                 if ($schedule && ! $isOffSchedule) {
-//                     $statusStr = 'Tidak Absen';
-//                 } else {
-//                     $statusStr = 'Libur';
-//                 }
-//             }
-//         }
-
-//         if (! $attendanceCodeStr) {
-//             if (in_array($statusStr, ['Belum Absen', 'Tidak Absen', 'Libur'])) {
-//                 $attendanceCodeStr = $scheduleCode ?? '-';
-//             }
-//         }
-
-//         $history[] = [
-//             'date' => $currentDate->format('d'),
-//             'day_name' => $currentDate->translatedFormat('l'),
-//             'full_date' => $dateStr,
-//             'schedule_code' => $scheduleCode ?? '-',
-//             'attendance_code' => $attendanceCodeStr ?? '-',
-//             'check_in' => $checkIn,
-//             'check_out' => $checkOut,
-//             'status' => $statusStr,
-//         ];
-//     }
-
-//     return response()->json([
-//         'history' => $history,
-//     ]);
-// }
-
+            if (! $attendanceCodeStr) {
+                if ($scheduleCode === 'o' && $isPastOrToday) {
+                    $attendanceCodeStr = 'o';
+                } else {
+                    $attendanceCodeStr = '-';
+                }
+            }
+            
+            $history[] = [
+                'date' => $currentDate->format('d'),
+                'day_name' => $currentDate->translatedFormat('l'),
+                'full_date' => $dateStr,
+                'schedule_code' => $scheduleCode ?? '-',
+                'attendance_code' => $attendanceCodeStr,
+                'check_in' => $checkIn,
+                'check_out' => $checkOut,
+                'status' => $statusStr,
+            ];
+        }
+    
+        return response()->json([
+            'meta' => [
+                'mode' => '3days',
+                'current_time' => $now->format('Y-m-d H:i:s'),
+                'timezone' => $timezone,
+            ],
+            'data' => [
+                [
+                    'user_id' => $user->id,
+                    'user_name' => $user->full_name,
+                    'summary' => $summary,
+                    'history' => $history,
+                ]
+            ]
+        ]);
+    }
   
+private function buildTimesheet($userIds, $timezone, $now)
+{
+    // ===== 3 HARI =====
+    $dates = [
+        $now->copy()->subDay(),
+        $now->copy(),
+        $now->copy()->addDay(),
+    ];
 
-    public function postMembersTimesheet(Request $request, Post $post)
+    $dateStrings = collect($dates)->map(fn($d) => $d->toDateString())->toArray();
+
+    // ===== PRELOAD USER (hindari N+1) =====
+    $users = User::whereIn('id', $userIds)->get()->keyBy('id');
+
+    // ===== SCHEDULE =====
+    $schedules = Schedule::whereIn('user_id', $userIds)
+        ->whereIn('date', $dateStrings)
+        ->with(['assignment', 'absence'])
+        ->get()
+        ->groupBy('user_id');
+
+    // ===== ATTENDANCE (PAKAI DATE) =====
+    $attendances = Attendance::whereIn('user_id', $userIds)
+        ->whereIn('date', $dateStrings)
+        ->with(['assignment', 'overtimeLog.workAssignment'])
+        ->get()
+        ->groupBy('user_id');
+
+    $result = [];
+
+    foreach ($userIds as $userId) {
+
+        $userSchedules = $schedules->get($userId, collect())
+            ->keyBy(fn($s) => Carbon::parse($s->date)->format('Y-m-d'));
+
+        $userAttendances = $attendances->get($userId, collect())
+            ->keyBy(fn($a) => Carbon::parse($a->date)->format('Y-m-d'));
+
+        $history = [];
+
+        $summary = [
+            'total_hari' => count($dates),
+            'schedule_kerja' => 0,
+            'kode_kehadiran' => 0,
+            'telat' => 0,
+            'tidak_absen' => 0,
+        ];
+
+        foreach ($dates as $currentDate) {
+
+            $dateStr = $currentDate->toDateString();
+
+            $schedule = $userSchedules->get($dateStr);
+            $attendance = $userAttendances->get($dateStr);
+
+            $scheduleCode = $schedule?->assignment?->code;
+            $isOffSchedule = $schedule ? $schedule->assignment->isOffDuty() : true;
+
+            $attendanceCodeStr = null;
+            $checkIn = '--:--';
+            $checkOut = '--:--';
+            $statusStr = '';
+
+            if ($schedule && ! $isOffSchedule) {
+                $summary['schedule_kerja']++;
+            }
+
+            if ($attendance) {
+                $summary['kode_kehadiran']++;
+
+                if ($isOffSchedule) {
+                    $attendanceCodeStr = $attendance->overtimeLog?->workAssignment?->code ?? $attendance->assignment?->code;
+                } else {
+                    $attendanceCodeStr = $attendance->assignment?->code ?? $scheduleCode;
+                }
+
+                $checkIn = $attendance->check_in_at ? $attendance->check_in_at->setTimezone($timezone)->format('H:i') : '--:--';
+                $checkOut = $attendance->check_out_at ? $attendance->check_out_at->setTimezone($timezone)->format('H:i') : '--:--';
+
+                if (in_array($attendance->computed_status, ['HADIR TELAT', 'HADIR TELAT LEMBUR'])) {
+                    $statusStr = 'Telat';
+                    $summary['telat']++;
+                } else {
+                    $statusStr = 'Tepat Waktu';
+                }
+
+            } elseif ($schedule && $schedule->absence) {
+
+                $statusStr = $schedule->absence->label;
+                $attendanceCodeStr = $schedule->absence->absence_type;
+
+                if (in_array($schedule->absence->absence_type, ['S','I','C','A'])) {
+                    $summary['tidak_absen']++;
+                }
+
+            } else {
+
+                if ($schedule && ! $isOffSchedule) {
+                    $statusStr = 'Tidak Absen';
+                    $summary['tidak_absen']++;
+                } else {
+                    $statusStr = 'Libur';
+                }
+            }
+
+            $isPastOrToday = $currentDate->lte($now);
+
+            if (! $attendanceCodeStr) {
+                if ($scheduleCode === 'o' && $isPastOrToday) {
+                    $attendanceCodeStr = 'o';
+                } else {
+                    $attendanceCodeStr = '-';
+                }
+            }
+
+            $history[] = [
+                'date' => $currentDate->format('d'),
+                'day_name' => $currentDate->translatedFormat('l'),
+                'full_date' => $dateStr,
+                'schedule_code' => $scheduleCode ?? '-',
+                'attendance_code' => $attendanceCodeStr ?? '-',
+                'check_in' => $checkIn,
+                'check_out' => $checkOut,
+                'status' => $statusStr,
+            ];
+        }
+
+        $result[] = [
+            'user_id' => $userId,
+            'user_name' => $users[$userId]?->full_name ?? null,
+            'summary' => $summary,
+            'history' => $history,
+        ];
+    }
+
+    return $result;
+}
+
+    public function memberTimesheet(Request $request, $userid)
     {
         $this->authorize('progress', Attendance::class);
-
+        $userId = User::find($userid)->id;
         $validator = Validator::make($request->query(), [
-            'current_time' => 'required|date_format:Y-m-d H:i:s',
+            // 'current_time' => 'required|date_format:Y-m-d H:i:s',
             'project_id' => 'sometimes|integer',
-            'user_id' => 'sometimes|integer|exists:users,id',
+            // 'user_id' => 'required|integer',
         ]);
-
-        $userIdFilter = $request->query('user_id');
 
         if ($validator->fails()) {
             return response()->json($validator->errors(), 422);
         }
 
         $user = Auth::user();
+        $targetUser = User::find($userid);
+
+        if (! $targetUser) {
+            return response()->json([
+                'message' => 'User tidak ditemukan.'
+            ], 404);
+        }
 
         // ================= PROJECT SCOPE =================
         if ($user->role === 'ho') {
@@ -1500,8 +1806,8 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
             }
         }
 
-        if ((int) $post->project_id !== $projectId && $user->role !== 'dev') {
-            return response()->json(['message' => 'Post tidak berada dalam project Anda.'], 403);
+        if ((int) $targetUser->project_id !== $projectId && $user->role !== 'dev') {
+            return response()->json(['message' => 'User target tidak berada dalam project Anda.'], 403);
         }
 
         $project = Project::with('organization')->find($projectId);
@@ -1512,35 +1818,28 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
         // ================= TIMEZONE =================
         $timezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
 
-        $nowInProjectTz = Carbon::createFromFormat(
-            'Y-m-d H:i:s',
-            $request->query('current_time'),
-            $timezone
-        );
+$nowInProjectTz = now()->setTimezone($timezone);
 
         $startDate = $nowInProjectTz->copy()->startOfMonth();
         $endDate = $nowInProjectTz->copy()->endOfMonth();
 
         // ================= GET ATTENDANCE =================
-        $attendanceRows = Attendance::where('post_id', $post->id)
-            ->when($userIdFilter, function ($q) use ($userIdFilter) {
-                $q->where('user_id', $userIdFilter);
-            })
+        $attendanceRows = Attendance::where('user_id', $targetUser->id)
             ->whereBetween('date', [$startDate->toDateString(), $endDate->toDateString()])
             ->with(['user', 'assignment', 'overtimeLog.workAssignment'])
             ->get();
 
         // ================= GET USER IDS =================
-        $userIds = $attendanceRows->pluck('user_id')->unique();
+        $userIds = collect([$targetUser->id]);
 
         if ($userIds->isEmpty()) {
             return response()->json([
                 'success' => true,
-                'meta' => [
-                    'current_time' => $request->query('current_time'),
-                    'timezone' => $timezone,
-                    'month' => $startDate->format('Y-m'),
-                ],
+'meta' => [
+    'current_time' => $nowInProjectTz->format('Y-m-d H:i:s'),
+    'timezone' => $timezone,
+    'month' => $startDate->format('Y-m'),
+],
                 'data' => [],
             ]);
         }
@@ -1571,6 +1870,7 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
                 'total_hari' => $startDate->daysInMonth,
                 'schedule_kerja' => 0,
                 'kode_kehadiran' => 0,
+                'telat' => 0,
                 'tidak_absen' => 0,
             ];
 
@@ -1600,9 +1900,8 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
                     $summary['kode_kehadiran']++;
 
                     if ($isOffSchedule) {
-                        $workCode = $attendance->overtimeLog?->workAssignment?->code
+                        $attendanceCodeStr = $attendance->overtimeLog?->workAssignment?->code
                             ?? $attendance->assignment?->code;
-                        $attendanceCodeStr = $scheduleCode.' / '.$workCode;
                     } else {
                         $attendanceCodeStr = $attendance->assignment?->code ?? $scheduleCode;
                     }
@@ -1615,15 +1914,24 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
                         ? $attendance->check_out_at->setTimezone($timezone)->format('H:i')
                         : '--:--';
 
-                    $statusStr = in_array($attendance->computed_status, [
+                    if (in_array($attendance->computed_status, [
                         'HADIR TELAT',
                         'HADIR TELAT LEMBUR',
-                    ]) ? 'Telat' : 'Tepat Waktu';
+                    ])) {
+                        $statusStr = 'Telat';
+                        $summary['telat']++;
+                    } else {
+                        $statusStr = 'Tepat Waktu';
+                    }
 
                 } elseif ($schedule && $schedule->absence) {
                     // ================= ADA ABSENCE =================
                     $statusStr = $schedule->absence->label;
-                    $attendanceCodeStr = $scheduleCode.' / '.$schedule->absence->absence_type;
+                    $attendanceCodeStr = $schedule->absence->absence_type;
+                    // Count absence as tidak_absen
+                    if (in_array($schedule->absence->absence_type, ['S', 'I', 'C', 'A'])) {
+                        $summary['tidak_absen']++;
+                    }
                 } else {
                     // ================= TIDAK ADA ATTENDANCE =================
                     if ($currentDate->greaterThanOrEqualTo($nowInProjectTz->copy()->startOfDay())) {
@@ -1638,10 +1946,16 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
                     }
                 }
 
-                if (! $attendanceCodeStr) {
-                    $attendanceCodeStr = $scheduleCode ?? '-';
-                }
+                $isPastOrToday = $currentDate->lte($nowInProjectTz->copy()->startOfDay()); //ini tidak memakai $now
 
+                if (! $attendanceCodeStr) {
+                    if ($scheduleCode === 'o' && $isPastOrToday) {
+                        $attendanceCodeStr = 'o';
+                    } else {
+                        $attendanceCodeStr = '-';
+                    }
+                }
+                
                 $history[] = [
                     'date' => $currentDate->format('d'),
                     'day_name' => $currentDate->translatedFormat('l'),
@@ -1818,5 +2132,311 @@ $allSchedules = Schedule::whereIn('user_id', $userIds)
 
         // Belum check-in = bisa attend
         return true;
+    }
+
+    /**
+     * GET ATTENDANCE SCANS
+     * GET /api/attendances/{attendance}/scans
+     * 
+     * Menampilkan list patrol points yang harus di-scan dengan status
+     * Support untuk both member (specific post) dan danru (all static posts)
+     */
+    public function getAttendanceScans(Request $request, Attendance $attendance)
+    {
+        // Authorization
+        $this->authorize('viewScans', $attendance);
+
+        $user = Auth::user();
+
+        // Validate attendance is valid and checked-in
+        if (!$attendance->check_in_at || $attendance->check_out_at) {
+            return response()->json([
+                'message' => 'Attendance tidak valid atau sudah check-out.',
+            ], 400);
+        }
+
+        $project = $attendance->project;
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+
+        // Get patrol points berdasarkan tipe user
+        if ($attendance->isCommanderAttendance()) {
+            // Danru: ambil semua static posts di project
+            $posts = $project->posts()
+                ->where('type', 'static')
+                ->with('patrolPoints')
+                ->orderBy('id')
+                ->get();
+        } else {
+            // Member: ambil post spesifik yang dipilih
+            if (!$attendance->post_id) {
+                return response()->json([
+                    'message' => 'Post belum dipilih.',
+                ], 400);
+            }
+            $posts = $attendance->post ? collect([$attendance->post])->load('patrolPoints') : collect();
+        }
+
+        // Get scans yang sudah dilakukan
+        $scans = PatrolScan::where('attendance_id', $attendance->id)
+            ->with('qrCode.patrolPoint', 'photos')
+            ->orderBy('scan_time')
+            ->get();
+
+        // Build response: patrol points dengan status
+        $patrolPointsData = [];
+        $totalPoints = 0;
+        $scannedPoints = 0;
+
+        foreach ($posts as $post) {
+            foreach ($post->patrolPoints as $point) {
+                $totalPoints++;
+
+                // Cek apakah point ini sudah di-scan
+                $pointScans = $scans->filter(function ($scan) use ($point) {
+                    return $scan->qrCode?->patrolPoint?->id === $point->id;
+                });
+
+                $isScanned = $pointScans->isNotEmpty();
+                if ($isScanned) $scannedPoints++;
+
+                $patrolPointsData[] = [
+                    'id' => $point->id,
+                    'name' => $point->name,
+                    'sequence_order' => $point->sequence_order,
+                    'post_id' => $post->id,
+                    'post_name' => $post->name,
+                    'post_type' => $post->type,
+                    'latitude' => (string) $point->latitude,
+                    'longitude' => (string) $point->longitude,
+                    'altitude' => (string) ($point->altitude ?? ''),
+                    'radius' => (float) ($point->radius ?? 50),
+                    'is_scanned' => $isScanned,
+                    'scanned_count' => $pointScans->count(),
+                    'last_scan_time' => $pointScans->last()?->scan_time,
+                    'last_scan_user' => $pointScans->last()?->attendance?->user?->full_name,
+                    'last_scan_note' => $pointScans->last()?->note,
+                ];
+            }
+        }
+
+        // Sort by post_id then sequence_order
+        $patrolPointsData = collect($patrolPointsData)
+            ->sortBy(['post_id', 'sequence_order'])
+            ->values()
+            ->toArray();
+
+        return response()->json([
+            'success' => true,
+            'message' => 'Data patrol points berhasil diambil.',
+            'data' => [
+                'attendance_id' => $attendance->id,
+                'user' => [
+                    'id' => $attendance->user_id,
+                    'name' => $attendance->user->full_name,
+                    'role' => $attendance->user->role,
+                ],
+                'timezone' => $projectTimezone,
+                'patrol_points' => $patrolPointsData,
+                'progress' => [
+                    'total_points' => $totalPoints,
+                    'scanned_points' => $scannedPoints,
+                    'remaining_points' => max(0, $totalPoints - $scannedPoints),
+                    'percentage' => $totalPoints > 0 ? round(($scannedPoints / $totalPoints) * 100, 2) : 0,
+                ],
+            ],
+        ], 200);
+    }
+
+  
+    /**
+    //  * CHECK QR CODE
+    //  * POST /api/attendances/{attendance}/check-qr
+    //  * 
+    //  * Validate QR code sebelum scan
+    //  * Response includes post_name dan patrol point details
+    //  */
+    // public function checkQrCode(Request $request, Attendance $attendance)
+    // {
+    //     $validator = Validator::make($request->all(), [
+    //         'qr_code' => 'required|string',
+    //     ]);
+
+    //     if ($validator->fails()) {
+    //         return response()->json($validator->errors(), 422);
+    //     }
+
+    //     $user = Auth::user();
+
+    //     // Validate attendance
+    //     if ($attendance->user_id !== $user->id && $user->role !== 'dev') {
+    //         return response()->json(['message' => 'Unauthorized'], 403);
+    //     }
+
+    //     if (!$attendance->check_in_at || $attendance->check_out_at) {
+    //         return response()->json([
+    //             'message' => 'Attendance tidak valid atau sudah check-out.',
+    //         ], 400);
+    //     }
+
+    //     // Validate QR code
+    //     $patrolScanService = app(PatrolScanService::class);
+    //     $validation = $patrolScanService->validateQrCode($request->qr_code, $attendance);
+
+    //     if (!$validation['valid']) {
+    //         return response()->json([
+    //             'success' => false,
+    //             'message' => implode(', ', $validation['errors']),
+    //             'errors' => $validation['errors'],
+    //         ], 422);
+    //     }
+
+    //     // Get patrol point info dengan post name
+    //     $qrCode = $validation['qr_code'];
+    //     $patrolPoint = $qrCode->patrolPoint;
+    //     $post = $patrolPoint?->post;
+
+    //     // Check apakah sudah di-scan sebelumnya
+    //     $previousScans = PatrolScan::where('attendance_id', $attendance->id)
+    //         ->where('qr_code_id', $qrCode->id)
+    //         ->count();
+
+    //     return response()->json([
+    //         'success' => true,
+    //         'message' => 'QR code valid.',
+    //         'data' => [
+    //             'qr_code_id' => $qrCode->id,
+    //             'qr_code' => $qrCode->code,
+    //             'patrol_point' => [
+    //                 'id' => $patrolPoint?->id,
+    //                 'name' => $patrolPoint?->name,
+    //                 'sequence_order' => $patrolPoint?->sequence_order,
+    //                 'latitude' => (string) ($patrolPoint?->latitude ?? ''),
+    //                 'longitude' => (string) ($patrolPoint?->longitude ?? ''),
+    //                 'radius' => (float) ($patrolPoint?->radius ?? 50),
+    //             ],
+    //             'post' => [
+    //                 'id' => $post?->id,
+    //                 'name' => $post?->name,
+    //                 'type' => $post?->type,
+    //             ],
+    //             'previous_scan_count' => $previousScans,
+    //             'already_scanned' => $previousScans > 0,
+    //         ],
+    //     ], 200);
+    // }
+
+    /**
+     * GET PATROL POINTS
+     * GET /api/attendances/{attendance}/patrol-points
+     * 
+     * Menampilkan list patrol points yang harus di-scan dengan status
+     * Support untuk both member (specific post) dan danru (all static posts)
+     */
+
+public function getPatrolPoints(Attendance $attendance)
+{
+    $this->authorize('view', $attendance);
+
+    // 🔥 eager load biar ga N+1 + ambil QR aktif
+    $attendance->load([
+        'post.patrolPoints.activeQrCode',
+        'user'
+    ]);
+
+    $points = $attendance->getPatrolPoints()->map(function ($point) {
+
+        $qr = $point->activeQrCode; // ✅ ambil QR active
+
+        return [
+            'patrol_point_id' => $point->id,
+            'name'            => $point->name,
+            'qr_code'         => $qr?->code,
+            'sequence'        => $point->sequence_order, // ⚠️ biasanya ini, bukan sequence
+            'latitude'        => $point->latitude,
+            'longitude'       => $point->longitude,
+        ];
+    });
+
+    return response()->json([
+        'success' => true,
+        'data'    => $points,
+    ]);
+}
+    /**
+     * DOWNLOAD PROGRESS PDF
+     * GET /api/attendances/{attendance}/progress/pdf
+     * 
+     * Download PDF progress patrol scan untuk attendance/assignment
+     * Optional: download untuk date range specific atau session specific
+     */
+    public function downloadProgressPdf(Request $request, Attendance $attendance)
+    {
+        $this->authorize('downloadProgressPdf', $attendance);
+
+        $validator = Validator::make($request->all(), [
+            'snapshot_id' => 'nullable|integer|exists:attendance_progress_snapshots,id',
+            'session_start' => 'nullable|date_format:Y-m-d H:i:s',
+            'session_end' => 'nullable|date_format:Y-m-d H:i:s',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json($validator->errors(), 422);
+        }
+
+        // Check if attendance has passed the end_time of assignment
+        if ($attendance->schedule) {
+            // Tentukan assignment yang digunakan (overtime atau regular)
+            $assignment = null;
+            if ($attendance->overtimeLog && $attendance->overtimeLog->workAssignment) {
+                $assignment = $attendance->overtimeLog->workAssignment;
+            } elseif ($attendance->assignment) {
+                $assignment = $attendance->assignment;
+            }
+            
+            if ($assignment) {
+                $projectTimezone = $attendance->project?->timezone 
+                    ?? $attendance->project?->organization?->timezone 
+                    ?? 'Asia/Jakarta';
+                
+                $schDate = $attendance->schedule->date instanceof \Carbon\Carbon 
+                    ? $attendance->schedule->date->format('Y-m-d') 
+                    : \Carbon\Carbon::parse($attendance->schedule->date)->format('Y-m-d');
+                
+                $end = Carbon::createFromFormat('Y-m-d H:i:s', $schDate.' '.$assignment->end_time, $projectTimezone);
+                $nowInProjectTz = now($projectTimezone);
+                
+                // Jika sudah melewati end_time, return error
+                if ($nowInProjectTz->greaterThanOrEqualTo($end)) {
+                    return response()->json([
+                        'message' => 'Sesi sudah berakhir, tidak dapat download progress.',
+                        'end_time' => $end->toISOString(),
+                    ], 422);
+                }
+            }
+        }
+
+        $pdfService = app(\App\Services\ProgressPdfExportService::class);
+
+        try {
+            if ($request->has('session_start') && $request->has('session_end')) {
+                // Download untuk date range specific
+                $sessionStart = Carbon::createFromFormat('Y-m-d H:i:s', $request->session_start);
+                $sessionEnd = Carbon::createFromFormat('Y-m-d H:i:s', $request->session_end);
+                return $pdfService->generateSessionProgressPdf($attendance, $sessionStart, $sessionEnd);
+            } else {
+                // Download untuk attendance (uses latest snapshot)
+                if ($attendance->isCommanderAttendance()) {
+                    $pdf = $pdfService->generateDanruProgressPdf($attendance);
+                } else {
+                    $pdf = $pdfService->generateProgressPdf($attendance);
+                }
+                return $pdf;
+            }
+        } catch (\Exception $e) {
+            return response()->json([
+                'message' => 'Gagal generate PDF',
+                'error' => $e->getMessage(),
+            ], 500);
+        }
     }
 }

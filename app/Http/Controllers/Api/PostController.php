@@ -560,9 +560,9 @@ class PostController extends Controller
   <rect x="90" y="270" width="340" height="340" fill="#ffffff" stroke="#111111" stroke-width="4"/>
   <image href="{$qrDataUri}" x="110" y="290" width="300" height="300" preserveAspectRatio="xMidYMid meet"/>
 
-  {$this->buildMultilineTextSvg($postName, 665, 40, 700, 20, 46, 2)}
+  {$this->buildMultilineTextSvg($postName, 665, 34, 700, 20, 46, 2)}
   {$this->buildMultilineTextSvg($projectName, 760, 38, 700, 22, 42, 2)}
-  {$this->buildMultilineTextSvg($pointName, 830, 34, 500, 24, 38, 1)}
+  {$this->buildMultilineTextSvg($pointName, 800, 34, 500, 24, 38, 2)}
 </svg>
 SVG;
 

@@ -5,6 +5,7 @@ namespace App\Services;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\Storage;
 use Intervention\Image\ImageManager;
+use RuntimeException;
 
 class ImageWebpService
 {
@@ -37,7 +38,10 @@ class ImageWebpService
         $filename = uniqid('img_', true) . '.webp';
         $path = trim($directory, '/') . '/' . $filename;
 
-        Storage::disk('public')->put($path, (string) $encoded);
+        $stored = Storage::disk('public')->put($path, (string) $encoded);
+        if ($stored === false || ! Storage::disk('public')->exists($path)) {
+            throw new RuntimeException("Failed to store image in public disk at path: {$path}");
+        }
 
         return $path;
     }

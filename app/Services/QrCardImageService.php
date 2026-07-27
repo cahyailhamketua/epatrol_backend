@@ -13,7 +13,8 @@ class QrCardImageService
 {
     private const WIDTH = 520;
     private const HEIGHT = 860;
-    private const VERSION = 2;
+    // Bump versi saat layout card berubah agar file lama tidak dipakai lagi.
+    private const VERSION = 3;
 
     private const FONT_REGULAR = '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf';
     private const FONT_BOLD = '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf';
@@ -72,10 +73,10 @@ class QrCardImageService
         $projectName = strtoupper((string) ($patrolPoint->post?->project?->name ?? '-'));
         $pointName = strtoupper((string) ($patrolPoint->name ?? '-'));
 
-        // Font dibuat lebih kecil supaya tidak mepet dan tetap muat untuk nama panjang.
-        $this->drawCenteredWrappedText($img, $postName, 0, 640, 2, 34, true);
+        // Font post diperkecil sedikit, dan patrol point dinaikkan agar tidak terpotong.
+        $this->drawCenteredWrappedText($img, $postName, 0, 640, 2, 28, true);
         $this->drawCenteredWrappedText($img, $projectName, 0, 740, 1, 32, true);
-        $this->drawCenteredWrappedText($img, $pointName, 0, 790, 2, 28, false);
+        $this->drawCenteredWrappedText($img, $pointName, 0, 770, 2, 28, false);
 
         $ok = Storage::disk('public')->put($path, (string) $img->toWebp(85));
         if (! $ok) {

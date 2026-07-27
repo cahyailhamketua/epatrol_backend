@@ -163,4 +163,49 @@ class AttendancePolicy
 
         return false;
     }
+
+    /**
+     * VIEW ATTENDANCE SCANS (patrol points dengan status)
+     */
+    public function viewScans(User $user, Attendance $attendance): bool
+    {
+        // User hanya bisa lihat scans attendance miliknya
+        if ($user->id !== $attendance->user_id && $user->role !== 'dev') {
+            // Admin project bisa lihat attendance di project miliknya
+            if ($user->role === 'admin_project') {
+                return $user->project_id === $attendance->project_id;
+            }
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * DOWNLOAD PROGRESS PDF
+     */
+    public function downloadProgressPdf(User $user, Attendance $attendance): bool
+    {
+        // DEV bisa download semua
+        if ($user->role === 'dev') {
+            return true;
+        }
+
+        // HO bisa download attendance dalam organization miliknya
+        if ($user->role === 'ho') {
+            return $user->organization_id === $attendance->project->organization_id;
+        }
+
+        // Admin project bisa download attendance di project miliknya
+        if ($user->role === 'admin_project') {
+            return $user->project_id === $attendance->project_id;
+        }
+
+        // User hanya bisa download attendance miliknya sendiri
+        if (in_array($user->role, ['komandan_regu', 'anggota'], true)) {
+            return $user->id === $attendance->user_id;
+        }
+
+        return false;
+    }
 }

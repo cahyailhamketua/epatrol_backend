@@ -338,7 +338,7 @@ class PatrolScanService
         );
 
         // Check if within radius (convert meters to distance units)
-        $radiusInMeters = $patrolPoint->radius * 1000; // Assuming radius is in km
+        $radiusInMeters = $patrolPoint->radius; // Assuming radius is in km
         if ($distance > $radiusInMeters) {
             $errors[] = sprintf(
                 'Lokasi scan terlalu jauh. Jarak: %.2f m, Radius: %.2f m',
@@ -405,6 +405,24 @@ class PatrolScanService
 
             $qr = $qrValidation['qr'];
             $patrolPoint = $qr->patrolPoint;
+
+            // Validasi lokasi berdasarkan radius
+            $locationValidation = $this->validateLocation(
+                $attendance,
+                $patrolPoint,
+                $scanLatitude,
+                $scanLongitude,
+                $scanAltitude
+            );
+
+            if (! $locationValidation['valid']) {
+                return [
+                    'success' => false,
+                    'errors' => $locationValidation['errors'],
+                    'distance' => $locationValidation['distance'],
+                    'radius' => $locationValidation['radius'],
+                ];
+            }
 
             $sequenceValidation = $this->validateSequenceOrder($attendance, $patrolPoint);
             if (!$sequenceValidation['valid']) return ['success' => false, 'errors' => $sequenceValidation['errors'], 'already_scanned' => true];

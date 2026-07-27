@@ -53,12 +53,13 @@ class ScheduleGeneratorService
 
             $memberIds = $memberships->pluck('user_id')->unique()->values();
 
-            // Cleanup: hapus schedule bulan target untuk user yang tidak termasuk member aktif
+            // Cleanup: soft-delete schedule untuk user yang tidak termasuk member aktif (set team_id = NULL)
+            // Ini preserve schedule_id references dalam attendance/overtime/absence untuk data consistency
             Schedule::where('project_id', $projectId)
                 ->where('team_id', $teamId)
                 ->whereBetween('date', [$startDate, $endDate])
                 ->whereNotIn('user_id', $memberIds)
-                ->delete();
+                ->update(['team_id' => null]);
 
             foreach ($memberships as $membership) {
                 $user = $membership->user;

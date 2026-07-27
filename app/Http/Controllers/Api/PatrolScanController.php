@@ -6,11 +6,15 @@ use App\Http\Controllers\Controller;
 use App\Models\Activity;
 use App\Models\Attendance;
 use App\Models\PatrolScan;
+use App\Models\Post;
+use App\Models\Schedule;
 use App\Services\PatrolScanService;
 use App\Support\SignedMediaUrl;
 use Carbon\Carbon;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Cache;
+use App\Models\PatrolPoint;
 
 class PatrolScanController extends Controller
 {
@@ -25,66 +29,38 @@ class PatrolScanController extends Controller
      * Get scan progress for an attendance
      * GET /api/attendance/{attendance}/patrol-scan/progress
      */
-    public function getProgress(Attendance $attendance)
-    {
-        $this->authorize('view', $attendance);
+public function getProgress(Attendance $attendance)
+{
+    $this->authorize('view', $attendance);
 
-        // Find concurrent attendances at the same post, project, and shift
-        $concurrentAttendances = Attendance::where('post_id', $attendance->post_id)
-            ->where('date', $attendance->date)
-            ->where('assignment_id', $attendance->assignment_id)
-            ->whereNotNull('check_in_at')
-            ->get();
+    $concurrentAttendances = Attendance::query()
+        ->where('post_id', $attendance->post_id)
+        ->where('date', $attendance->date)
+        ->where('assignment_id', $attendance->assignment_id)
+        ->whereNotNull('check_in_at')
+        ->get();
 
-        if ($concurrentAttendances->isEmpty()) {
-            $concurrentAttendances = collect([$attendance]);
-        }
-
-        $attendanceIds = $concurrentAttendances->pluck('id')->toArray();
-        if ($attendance->isCommanderAttendance()) {
-            $progress = $this->patrolScanService->getMergedCommanderProgress($attendance->project, $concurrentAttendances);
-        } else {
-            $progress = $this->patrolScanService->getMergedScanProgress($concurrentAttendances, (int) $attendance->post_id);
-        }
-        
-        $scans = PatrolScan::whereIn('attendance_id', $attendanceIds)
-            ->with(['qrCode.patrolPoint', 'photos', 'attendance.user'])
-            ->orderBy('scan_time')
-            ->get();
-
-        return response()->json([
-            'success' => true,  
-            'data' => [
-                'progress' => $progress,
-                // 'scans' => $scans->map(function ($scan) {
-                //     return [
-                //         'id' => $scan->id,
-                //         'patrol_point' => $scan->qrCode?->patrolPoint,
-                //         'scan_time' => $scan->scan_time,
-                //         'note' => $scan->note,
-                //         'photos' => $scan->photos,
-                //         'photo_count' => $scan->photos->count(),
-                //         'user_name' => $scan->attendance?->user?->full_name,
-                //     ];
-                // }),
-                // 'patrol_points' => $attendance->getPatrolPoints()->map(function ($point) use ($attendanceIds) {
-                //     return [
-                //         'id' => $point->id,
-                //         'name' => $point->name,
-                //         'sequence_order' => $point->sequence_order,
-                //         'latitude' => $point->latitude,
-                //         'longitude' => $point->longitude,
-                //         'altitude' => $point->altitude,
-                //         'radius' => $point->radius,
-                //         'is_scanned' => PatrolScan::whereIn('attendance_id', $attendanceIds)
-                //             ->whereHas('qrCode', function ($query) use ($point) {
-                //                 $query->where('patrol_point_id', $point->id);
-                //             })->exists(),
-                //     ];
-                // }),
-            ],
-        ]);
+    if ($concurrentAttendances->isEmpty()) {
+        $concurrentAttendances = collect([$attendance]);
     }
+
+    $progress = $attendance->isCommanderAttendance()
+        ? $this->patrolScanService->getMergedCommanderProgress(
+            $attendance->project,
+            $concurrentAttendances
+        )
+        : $this->patrolScanService->getMergedScanProgress(
+            $concurrentAttendances,
+            (int) $attendance->post_id
+        );
+
+    return response()->json([
+        'success' => true,
+        'data' => [
+            'progress' => $progress,
+        ],
+    ]);
+}
 
     /**
      * Progress detail for attendance with patrol scan + ishoma activities + basic timesheet
@@ -212,15 +188,143 @@ class PatrolScanController extends Controller
     //     ]);
     // }
 
-    /**
-     * Validate QR sebelum scan — attendance_id wajib dikirim bersama qr_code.
-     * POST /api/patrol-scan/check-qr
-     */
+
+    // make lokasi untuk checkqr
+
+//      public function checkQr(Request $request)
+// {
+//     $validated = $request->validate([
+//         'attendance_id'  => 'required|integer',
+//         'qr_code'        => 'required|string',
+//         // 'scan_latitude'  => 'required|numeric|between:-90,90',
+//         // 'scan_longitude' => 'required|numeric|between:-180,180',
+//         // 'scan_altitude'  => 'nullable|numeric',
+//     ]);
+
+//     $attendance = Attendance::with([
+//         'project.organization',
+//         'user',
+//         'assignment',
+//         'post'
+//     ])->find($validated['attendance_id']);
+
+//     if (! $attendance) {
+//         return response()->json([
+//             'success' => false,
+//             'message' => 'Attendance tidak ditemukan'
+//         ], 404);
+//     }
+
+//     $this->authorize('scanForAttendance', [
+//         PatrolScan::class,
+//         $attendance
+//     ]);
+
+//     // Validasi QR
+//     $qrCheck = $this->patrolScanService->validateQrCode(
+//         $validated['qr_code'],
+//         $attendance
+//     );
+
+//     $alreadyScanned = false;
+//     $nearbyUnscanned = [];
+
+//     // Default location response
+//     $locationValidation = [
+//         'valid' => false,
+//         'distance' => null,
+//         'radius' => null,
+//         'errors' => [],
+//     ];
+
+//     if ($qrCheck['valid'] && $qrCheck['qr']) {
+
+//         $qr = $qrCheck['qr'];
+
+//         // VALIDASI LOKASI / RADIUS
+//         // $locationValidation = $this->patrolScanService->validateLocation(
+//         //     $attendance,
+//         //     $qr->patrolPoint,
+//         //     (float) $validated['scan_latitude'],
+//         //     (float) $validated['scan_longitude'],
+//         //     isset($validated['scan_altitude'])
+//         //         ? (float) $validated['scan_altitude']
+//         //         : null
+//         // );
+
+//         // Cek apakah sudah pernah scan
+//         $alreadyScanned = $attendance->patrolScans()
+//             ->where('qr_code_id', $qr->id)
+//             ->exists();
+
+//         if ($alreadyScanned) {
+//             $seqResult = $this->patrolScanService
+//                 ->validateSequenceOrder($attendance, $qr->patrolPoint);
+
+//             $nearbyUnscanned = $seqResult['nearby_unscanned'] ?? [];
+//         }
+//     }
+
+//     $remaining = $attendance->getPatrolPoints()
+//         ->filter(function ($point) use ($attendance) {
+//             return ! $attendance->patrolScans()
+//                 ->whereHas('qrCode', function ($query) use ($point) {
+//                     $query->where('patrol_point_id', $point->id);
+//                 })
+//                 ->exists();
+//         })
+//         ->values();
+
+//     $post = $attendance->post;
+
+//     return response()->json([
+//         'success' =>
+//             $qrCheck['valid']
+//             && ! $alreadyScanned
+//             && $locationValidation['valid'],
+
+//         'errors' => array_merge(
+//             $qrCheck['errors'] ?? [],
+//             $locationValidation['errors'] ?? []
+//         ),
+
+//         'data' => [
+//             'attendance_id' => $attendance->id,
+//             'qr_code' => $validated['qr_code'],
+
+//             'is_valid' => $qrCheck['valid'],
+//             'already_scanned' => $alreadyScanned,
+
+//             // INFO LOKASI
+//             'is_in_radius' => $locationValidation['valid'],
+//             'distance' => $locationValidation['distance'],
+//             'radius' => $locationValidation['radius'],
+//             'location_errors' => $locationValidation['errors'],
+
+//             'nearby_unscanned' => $nearbyUnscanned,
+//             'remaining_patrol_points' => $remaining,
+
+//             'scan_progress' => $this->patrolScanService
+//                 ->getScanProgress($attendance),
+
+//             'post' => [
+//                 'id' => $post?->id,
+//                 'name' => $post?->name,
+//                 'type' => $post?->type,
+//             ],
+//         ],
+//     ]);
+// }
+
+
     public function checkQr(Request $request)
     {
         $validated = $request->validate([
             'attendance_id' => 'required|integer',
             'qr_code'       => 'required|string',
+            'scan_latitude' => 'required|numeric|between:-90,90',
+            'scan_longitude' => 'required|numeric|between:-180,180',
+            'scan_altitude'  => 'nullable|numeric',
         ]);
 
         $attendance = Attendance::with(['project.organization', 'user', 'assignment', 'post'])
@@ -237,18 +341,42 @@ class PatrolScanController extends Controller
 
         $alreadyScanned  = false;
         $nearbyUnscanned = [];
+        $qr = null;
+        $locationValidation = [
+            'valid' => false,
+            'distance' => null,
+            'radius' => null,
+            'errors' => [],
+        ];
 
         if ($qrCheck['valid'] && $qrCheck['qr']) {
             $qr = $qrCheck['qr'];
+            
+            // Validasi lokasi berdasarkan radius
+            $locationValidation = $this->patrolScanService->validateLocation(
+                $attendance,
+                $qr->patrolPoint,
+                (float) $validated['scan_latitude'],
+                (float) $validated['scan_longitude'],
+                isset($validated['scan_altitude']) ? (float) $validated['scan_altitude'] : null
+            );
+            
             // Cek apakah titik ini sudah pernah di-scan pada attendance ini
             $alreadyScanned = $attendance->patrolScans()
                 ->where('qr_code_id', $qr->id)
                 ->exists();
 
+            // if ($alreadyScanned) {
+            //     $seqResult       = $this->patrolScanService->validateSequenceOrder($attendance, $qr->patrolPoint);
+            //     $nearbyUnscanned = $seqResult['nearby_unscanned'] ?? [];
+            // }
+
             if ($alreadyScanned) {
-                $seqResult       = $this->patrolScanService->validateSequenceOrder($attendance, $qr->patrolPoint);
-                $nearbyUnscanned = $seqResult['nearby_unscanned'] ?? [];
-            }
+    $seqResult       = $this->patrolScanService->validateSequenceOrder($attendance, $qr->patrolPoint);
+    $nearbyUnscanned = $seqResult['nearby_unscanned'] ?? [];
+
+    $locationValidation['errors'][] = 'Titik patrol sudah dipindai sebelumnya.';
+}
         }
 
         $remaining = $attendance->getPatrolPoints()->filter(function ($point) use ($attendance) {
@@ -257,17 +385,32 @@ class PatrolScanController extends Controller
             })->exists();
         })->values();
 
+        
+
+        $post = $attendance->post;
+        
         return response()->json([
-            'success' => $qrCheck['valid'] && ! $alreadyScanned,
-            'errors'  => $qrCheck['errors'] ?? [],
+            'success' => $qrCheck['valid'] && ! $alreadyScanned && $locationValidation['valid'],
+            'errors'  => array_merge(
+                $qrCheck['errors'] ?? [],
+                $locationValidation['errors'] ?? []
+            ),
             'data'    => [
                 'attendance_id'          => $attendance->id,
                 'qr_code'                => $validated['qr_code'],
                 'is_valid'               => $qrCheck['valid'],
                 'already_scanned'        => $alreadyScanned,
+                'is_in_radius'           => $locationValidation['valid'],
+                'distance'               => $locationValidation['distance'],
+                'radius'                 => $locationValidation['radius'],
                 'nearby_unscanned'       => $nearbyUnscanned,
                 'remaining_patrol_points'=> $remaining,
                 'scan_progress'          => $this->patrolScanService->getScanProgress($attendance),
+        'post' => [
+            'id'   => $qr?->patrolPoint?->id,
+            'name' => $qr?->patrolPoint?->name,
+
+        ],
             ],
         ]);
     }
@@ -282,7 +425,7 @@ class PatrolScanController extends Controller
         $this->authorize('create', PatrolScan::class);
 
         $validated = $request->validate([
-            'attendance_id'  => 'required|integer',
+           'attendance_id'  => 'required|integer',
             'qr_code'        => 'required|string',
             'scan_latitude'  => 'required|numeric|between:-90,90',
             'scan_longitude' => 'required|numeric|between:-180,180',
@@ -333,6 +476,23 @@ class PatrolScanController extends Controller
                 if (! $result['success']) {
                     return response()->json($result, $result['status_code'] ?? 422);
                 }
+// 🔥 CLEAR CACHE (pakai key simple)
+Cache::forget('attendance_scans_' . $attendance->id);
+
+// 🔥 EVENT REALTIME
+event(new \App\Events\AttendanceUpdated(
+    userId: $attendance->user_id,
+    status: 'scan',
+    timestamp: now(),
+    assignmentId: $attendance->assignment_id,
+    extra: [
+        'scan_id' => $result['scan']->id,
+        'patrol_point_id' => $result['scan']->qrCode?->patrolPoint?->id,
+        'patrol_point_name' => $result['scan']->qrCode?->patrolPoint?->name,
+        'progress' => $result['progress'] ?? null,
+    ]
+));
+
 
                 return response()->json([
                     'success' => true,
@@ -452,41 +612,277 @@ class PatrolScanController extends Controller
     }
 
     /**
-     * Get all scans for attendance with photos
+     * Get all scans for attendance with photos, progress, and detailed scan info
      * GET /api/attendance/{attendance}/patrol-scans
+     * 
+     * Features:
+     * - Redis caching (5 minutes)
+     * - Progress stats (total_posts, posts_covered, etc)
+     * - Full scan_details with photo URLs and metadata
      */
     public function getAttendanceScans(Attendance $attendance)
     {
         $this->authorize('view', $attendance);
-
+    
+        // =====================================================
+        // CACHE
+        // =====================================================
+        // $cacheKey = 'attendance_scans_' . $attendance->id . '_' . $attendance->updated_at->format('Y-m-d H:i');
+        // $cacheMinutes = 5;
+    
+        // if ($cached = Cache::get($cacheKey)) {
+        //     return response()->json([
+        //         'success' => true,
+        //         'data' => $cached,
+        //     ]);
+        // }
+    
+        // =====================================================
+        // LOAD RELATIONS
+        // =====================================================
+        $attendance->load([
+            'post',
+            'user',
+            'assignment',
+            'project.organization',
+            'schedule.assignment'
+        ]);
+    
+        $project = $attendance->project;
+        $user = $attendance->user;
+        $role = $user?->role;
+    
+        // =====================================================
+        // GET SCANS
+        // =====================================================
         $scans = $attendance->patrolScans()
-            ->with(['qrCode.patrolPoint', 'photos'])
+            ->with([
+                'qrCode.patrolPoint',
+                'photos',
+                'attendance.user'
+            ])
             ->orderBy('scan_time')
             ->get();
+    
+        // =====================================================
+        // PATROL POINTS (NORMAL USER / DANRU)
+        // =====================================================
+        if (in_array($role, ['komandan_regu', 'danru'])) {
+    
+            $patrolPoints = PatrolPoint::whereHas('post', function ($q) use ($attendance) {
+                $q->where('project_id', $attendance->project_id)
+                  ->where('type', 'static');
+            })
+            ->orderBy('post_id')
+            ->orderBy('sequence_order')
+            ->get();
+    
+        } else {
+    
+            $post = $attendance->post;
+    
+            $patrolPoints = $post
+                ? $post->patrolPoints()
+                    ->orderBy('sequence_order')
+                    ->get()
+                : collect();
+        }
+    
+        // =====================================================
+        // PATROL PROGRESS
+        // =====================================================
+        if (in_array($role, ['komandan_regu', 'danru'])) {
 
-        return response()->json([
-            'success' => true,
-            'data' => [
-                'attendance' => $attendance,
-                'scans' => $scans->map(function ($scan) {
+            // TOTAL = jumlah post static
+            $totalPatrolPoints = Post::where('project_id', $attendance->project_id)
+                ->where('type', 'static')
+                ->count();
+        
+            // SCANNED = jumlah post static yang sudah discan attendance ini
+            $scannedPatrolPoints = $scans
+                ->pluck('qrCode.post_id')
+                ->filter()
+                ->unique()
+                ->count();
+        
+        } else {
+        
+            $post = $attendance->post;
+        
+            $patrolPoints = $post
+                ? $post->patrolPoints()->get()
+                : collect();
+        
+            $totalPatrolPoints = $patrolPoints->count();
+        
+            $scannedPatrolPoints = $scans
+                ->pluck('qrCode.patrolPoint.id')
+                ->filter()
+                ->unique()
+                ->count();
+        }
+        
+        $remainingPatrolPoints = max(0, $totalPatrolPoints - $scannedPatrolPoints);
+        
+        $progressPercentage = $totalPatrolPoints > 0
+            ? round(($scannedPatrolPoints / $totalPatrolPoints) * 100, 2)
+            : 0;
+    
+        // =====================================================
+        // PROJECT STATS
+        // =====================================================
+        $today = $attendance->date->format('Y-m-d');
+        $yesterday = $attendance->date->copy()->subDay()->format('Y-m-d');
+    
+        $totalPosts = Post::where('project_id', $project->id)
+            ->where('type', 'mobile')
+            ->count();
+    
+        $postsCovered = Attendance::where('project_id', $project->id)
+            ->whereIn('date', [$today, $yesterday])
+            ->whereNotNull('check_in_at')
+            ->whereNotNull('post_id')
+            ->distinct('post_id')
+            ->count('post_id');
+    
+        $totalUsersScheduled = Schedule::where('project_id', $project->id)
+            ->whereIn('date', [$today, $yesterday])
+            ->distinct('user_id')
+            ->count('user_id');
+    
+        $totalUsersCheckedIn = Attendance::where('project_id', $project->id)
+            ->whereIn('date', [$today, $yesterday])
+            ->whereNotNull('check_in_at')
+            ->distinct('user_id')
+            ->count('user_id');
+    
+        $notCovered = max(0, $totalPosts - $postsCovered);
+    
+        $coveragePercentage = $totalPosts > 0
+            ? round(($postsCovered / $totalPosts) * 100, 2)
+            : 0;
+    
+        // =====================================================
+        // SCAN DETAILS
+        // =====================================================
+        $scanDetails = $scans->map(function ($scan) {
+    
+            $point = $scan->qrCode?->patrolPoint;
+    
+            return [
+                'id' => $scan->id,
+                'attendance_id' => $scan->attendance_id,
+    
+                'patrol_point_id' => $point?->id,
+                'patrol_point_name' => $point?->name,
+    
+                'scan_time' => $scan->scan_time,
+                'note' => $scan->note,
+    
+                'photos' => $scan->photos->map(function ($photo) {
                     return [
-                        'id' => $scan->id,
-                        'patrol_point' => $scan->qrCode->patrolPoint,
-                        'scan_time' => $scan->scan_time,
-                        'note' => $scan->note,
-                        'photos' => $scan->photos->map(function ($photo) {
-                            return [
-                                'id' => $photo->id,
-                                'url' => SignedMediaUrl::patrolScanPhoto($photo),
-                                'storage_url_legacy' => Storage::disk('public')->url($photo->photo),
-                                'api_inline_url' => url('/api/patrol-scan-photo/'.$photo->id.'/inline'),
-                                'created_at' => $photo->created_at,
-                            ];
-                        }),
-                        'photo_count' => $scan->photos->count(),
+                        'id' => $photo->id,
+                        'url' => SignedMediaUrl::patrolScanPhoto($photo),
+                        'storage_url_legacy' => Storage::disk('public')->url($photo->photo),
+                        'api_inline_url' => url('/api/patrol-scan-photo/' . $photo->id . '/inline'),
+                        'created_at' => $photo->created_at,
                     ];
                 }),
+    
+                'scan_user' => [
+                    'id' => $scan->attendance->user_id,
+                    'full_name' => $scan->attendance->user?->full_name,
+                ],
+            ];
+        });
+
+        // =====================================================
+// PATROL POINTS DETAIL (UNTUK UI)
+// =====================================================
+$allScans = $scans;
+
+if (in_array($role, ['komandan_regu', 'danru'])) {
+
+    $postPoints = PatrolPoint::whereHas('post', function ($q) use ($attendance) {
+        $q->where('project_id', $attendance->project_id)
+          ->where('type', 'static');
+    })
+    ->orderBy('post_id')
+    ->orderBy('sequence_order')
+    ->get();
+
+} else {
+
+    $post = $attendance->post;
+
+    $postPoints = $post
+        ? $post->patrolPoints()->orderBy('sequence_order')->get()
+        : collect();
+}
+
+$patrolPointsDetail = $postPoints->map(function ($point) use ($allScans) {
+
+    $pointScans = $allScans->filter(function ($scan) use ($point) {
+        return $scan->qrCode?->patrolPoint?->id === $point->id;
+    })->sortBy('scan_time');
+
+    return [
+        'id' => $point->id,
+        'name' => $point->name,
+        'sequence_order' => $point->sequence_order,
+        'is_scanned' => $pointScans->isNotEmpty(),
+        'scanned_count' => $pointScans->count(),
+        'last_scan_time' => $pointScans->last()?->scan_time,
+        'last_scan_user' => $pointScans->last()?->attendance?->user?->full_name,
+    ];
+});
+    
+        // =====================================================
+        // RESPONSE
+        // =====================================================
+        $responseData = [
+            'attendance' => [
+                'id' => $attendance->id,
+                'user_id' => $attendance->user_id,
+                'user_name' => $attendance->user?->full_name,
+                'post_id' => $attendance->post_id,
+                'post_name' => $attendance->post?->name,
+                'date' => $attendance->date->format('Y-m-d'),
+                'check_in_at' => $attendance->check_in_at?->toISOString(),
+                'check_out_at' => $attendance->check_out_at?->toISOString(),
+                'computed_status' => $attendance->computed_status,
             ],
+    
+            'progress' => [
+                'total_posts' => $totalPosts,
+                'posts_covered' => $postsCovered,
+                'not_covered' => $notCovered,
+                'total_users_checked_in' => $totalUsersCheckedIn,
+                'total_users_scheduled' => $totalUsersScheduled,
+                'percentage' => $coveragePercentage,
+            ],
+    
+            'patrol_progress' => [
+                'total_patrol_points' => $totalPatrolPoints,
+                'scanned_patrol_points' => $scannedPatrolPoints,
+                'remaining_patrol_points' => $remainingPatrolPoints,
+                'progress_percentage' => $progressPercentage,
+            ],
+            'patrol_points' => $patrolPointsDetail,
+            'scan_details' => $scanDetails,
+    
+            'total_scans' => $scans->count(),
+            'total_photos' => $scans->sum(fn ($s) => $s->photos->count()),
+        ];
+    
+        // =====================================================
+        // SAVE CACHE
+        // =====================================================
+        // Cache::put($cacheKey, $responseData, now()->addMinutes($cacheMinutes));
+    
+        return response()->json([
+            'success' => true,
+            'data' => $responseData,
         ]);
     }
 

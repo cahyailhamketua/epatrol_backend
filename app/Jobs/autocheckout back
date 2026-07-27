@@ -1,0 +1,141 @@
+<?php
+
+namespace App\Jobs;
+
+use App\Models\Attendance;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Foundation\Bus\Dispatchable;
+use Illuminate\Foundation\Queue\Queueable;
+use Illuminate\Queue\InteractsWithQueue;
+use Illuminate\Queue\SerializesModels;
+use Carbon\Carbon;
+
+class AutoCheckoutAttendance implements ShouldQueue
+{
+    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+
+    /**
+     * Create a new job instance.
+     */
+    public function __construct(
+        public int $attendanceId
+    ) {
+        //
+    }
+
+    /**
+     * Execute the job.
+     * Auto-checkout user 2 hours after assignment end_time
+     */
+    public function handle(): void
+    {
+        $attendance = Attendance::with(['user', 'assignment', 'project.organization', 'overtimeLog.workAssignment'])
+            ->find($this->attendanceId);
+
+        if (!$attendance) {
+            return;
+        }
+
+        // Guard: Already checked out
+        if ($attendance->check_out_at) {
+            return;
+        }
+
+        // Guard: Not checked in
+        if (!$attendance->check_in_at) {
+            return;
+        }
+
+        $assignment = $attendance->assignment;
+        $project = $attendance->project;
+
+        if (!$project || !$assignment) {
+            return;
+        }
+
+        $projectTimezone = $project->timezone ?? $project->organization->timezone ?? 'Asia/Jakarta';
+        
+        // Use current time in project timezone
+        $now = now($projectTimezone)->setTimezone('UTC');
+        
+        $attendanceDate = $attendance->date->format('Y-m-d');
+        $endTime = null;
+        $startTime = null;
+        
+        // Determine end_time based on assignment type
+        if ($assignment->isOffDuty()) {
+            // For off-duty (O), use workAssignment end_time
+            $otLog = $attendance->overtimeLog;
+            if ($otLog?->workAssignment) {
+                $workAsgn = $otLog->workAssignment;
+                $endTime = Carbon::createFromFormat(
+                    'Y-m-d H:i:s',
+                    $attendanceDate . ' ' . $workAsgn->end_time,
+                    $projectTimezone
+                )->setTimezone('UTC');
+                
+                $startTime = Carbon::createFromFormat(
+                    'Y-m-d H:i:s',
+                    $attendanceDate . ' ' . $workAsgn->start_time,
+                    $projectTimezone
+                )->setTimezone('UTC');
+            }
+        } else {
+            // For regular assignments (P/M), use assignment end_time
+            $endTime = Carbon::createFromFormat(
+                'Y-m-d H:i:s',
+                $attendanceDate . ' ' . $assignment->end_time,
+                $projectTimezone
+            )->setTimezone('UTC');
+            
+            $startTime = Carbon::createFromFormat(
+                'Y-m-d H:i:s',
+                $attendanceDate . ' ' . $assignment->start_time,
+                $projectTimezone
+            )->setTimezone('UTC');
+        }
+
+        if (!$endTime || !$startTime) {
+            return;
+        }
+
+        // Handle midnight shift
+        if ($endTime->lessThanOrEqualTo($startTime)) {
+            $endTime->addDay();
+        }
+
+        // Calculate the target checkout time (2 hours after end_time)
+        $targetCheckoutTime = $endTime->copy()->addMinutes(120);//120
+
+        // Only auto-checkout if current time has passed the calculated time
+        if ($now->isBefore($targetCheckoutTime)) {
+            // Not yet time to auto-checkout
+            return;
+        }
+
+        // Overtime is fixed 2 hours by business rule for auto-checkout.
+        // Keep enum compatible with DB schema (NONE|PENDING|APPROVED).
+        $overtimeMinutes = 120;//120
+        $overtimeStatus = 'PENDING';
+
+        // Update computed_status
+        $computedStatus = $attendance->computed_status;
+        if ($overtimeMinutes > 0 && strpos($computedStatus, 'LEMBUR') === false) {
+            $computedStatus .= ' LEMBUR';
+        }
+
+        // Perform auto-checkout
+        $attendance->update([
+            // Use scheduled cutoff time so overtime does not drift when worker is delayed.
+            'check_out_at' => $targetCheckoutTime,
+            'checkout_lat' => $attendance->checkin_lat, // Use checkin location as fallback
+            'checkout_lng' => $attendance->checkin_lng,
+            'overtime_minutes' => $overtimeMinutes,
+            'overtime_status' => $overtimeStatus,
+            'computed_status' => $computedStatus,
+        ]);
+
+        // Invalidate project reports cache
+        \Illuminate\Support\Facades\Cache::forever('project_reports_' . $project->id . '_v', time());
+    }
+}

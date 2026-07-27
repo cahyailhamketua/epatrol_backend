@@ -11,16 +11,26 @@ use App\Http\Controllers\Api\OvertimeLogController;
 use App\Http\Controllers\Api\PatrolPointController;
 use App\Http\Controllers\Api\PatrolScanController;
 use App\Http\Controllers\Api\PayrollController;
+use App\Http\Controllers\Api\PayrollProjectRuleController;
+use App\Http\Controllers\Api\PayrollTerBracketController;
 use App\Http\Controllers\Api\PostController;
 use App\Http\Controllers\Api\ProjectController;
 use App\Http\Controllers\Api\ProjectReportController;
 use App\Http\Controllers\Api\ProjectReportExportController;
-use App\Http\Controllers\Api\QrCodeController;
+//use App\Http\Controllers\Api\QrCodeController;
 use App\Http\Controllers\Api\ScheduleController;
 use App\Http\Controllers\Api\ShiftController;
 use App\Http\Controllers\Api\TeamController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\DailyReportController;
+use App\Http\Controllers\Api\DocumentController;
+use App\Http\Controllers\Api\DocumentTypeController;
+use App\Http\Controllers\Api\UniformComponentController;
+use App\Http\Controllers\Api\EquipmentComponentController;
+use App\Http\Controllers\Api\BeritaAcaraController;
+use App\Http\Controllers\Api\BeritaAcaraNumberSuggestionController;
 use Illuminate\Support\Facades\Route;
+
 
 // user routes
 Route::post('/login', [AuthController::class, 'login']);
@@ -38,7 +48,9 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/users/{user}/activate', [UserController::class, 'activate']);
     // Create user
     Route::post('/users', [UserController::class, 'store']);
-    // logout
+    // Reset user password (dev only)
+    Route::post('/users/{user}/reset-password', [UserController::class, 'resetPassword']);
+    // logoutF
     Route::post('/logout', [AuthController::class, 'logout']);
     // change password
     Route::post('/change-password', [AuthController::class, 'changePassword']);
@@ -77,6 +89,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::patch('/projects/{project}/activate', [ProjectController::class, 'activate']);
     // user by project
     Route::get('/projects/{project}/users', [ProjectController::class, 'users']);
+    Route::get('/projects/{project}/users/without-team', [TeamController::class, 'usersWithoutTeam']);
 
     // Laporan dashboard (kehadiran, patrol danru, patrol pos, gabungan)
     Route::get('/projects/{project}/reports/attendance', [ProjectReportController::class, 'attendanceReport']);
@@ -230,19 +243,35 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Team members management
     Route::post('/teams/{team}/members', [ScheduleController::class, 'addTeamMember']);
+    Route::delete('/teams/{team}/members/{user}', [ScheduleController::class, 'removeTeamMember']);
 });
 
 // payroll routes
 Route::middleware('auth:sanctum')->group(function () {
+
     Route::get('/projects/{project}/payroll/sheet', [PayrollController::class, 'sheet']);
     Route::get('/projects/{project}/payroll/export', [PayrollController::class, 'downloadSheet']);
+    Route::get('/projects/{project}/payroll/slips', [PayrollController::class, 'projectSlips']);
+    Route::get('/projects/{project}/payroll/history', [PayrollController::class, 'projectHistory']);
     Route::post('/projects/{project}/payroll/release', [PayrollController::class, 'release']);
     Route::post('/projects/{project}/payroll/recalculate', [PayrollController::class, 'recalculate']);
+
+    Route::get('/projects/{project}/payroll/rules', [PayrollProjectRuleController::class, 'show']);
+    Route::put('/projects/{project}/payroll/rules', [PayrollProjectRuleController::class, 'upsert']);
+    Route::delete('/projects/{project}/payroll/rules', [PayrollProjectRuleController::class, 'destroy']);
+
+    Route::get('/projects/{project}/payroll/templates', [PayrollController::class, 'indexTemplates']);
+    Route::get('/projects/{project}/payroll/templates/{user}', [PayrollController::class, 'showTemplate']);
     Route::post('/projects/{project}/payroll/templates', [PayrollController::class, 'upsertTemplates']);
 
     Route::get('/my/payroll/history', [PayrollController::class, 'myHistory']);
     Route::get('/my/payroll/{month}', [PayrollController::class, 'myDetail']);
     Route::get('/my/payroll/{month}/download', [PayrollController::class, 'mySlipDownload']);
+
+    Route::get('/payroll/ter-brackets', [PayrollTerBracketController::class, 'index']);
+    Route::post('/payroll/ter-brackets', [PayrollTerBracketController::class, 'store']);
+    Route::put('/payroll/ter-brackets/{payrollTerBracket}', [PayrollTerBracketController::class, 'update']);
+    Route::delete('/payroll/ter-brackets/{payrollTerBracket}', [PayrollTerBracketController::class, 'destroy']);
 });
 
 // Attendance routes
@@ -250,7 +279,7 @@ Route::middleware('auth:sanctum')->group(function () {
     // List attendances (dengan filter)
     Route::get('/attendances', [AttendanceController::class, 'index']);
 
-    // ` check-in/patrol per assignment aktif (project user)
+    // ` check-in/patrol per assignment aktif (projeFct user)
     Route::get('/attendances/progress', [AttendanceController::class, 'progress']);
 
     // Validate time before check-in (tanpa foto)
@@ -265,8 +294,37 @@ Route::middleware('auth:sanctum')->group(function () {
     // Patrol scan (mobile post)
     Route::post('/attendances/patrol-scan', [AttendanceController::class, 'patrolScan']);
 
+    // Offline patrol scan (queue untuk sync kemudian)
+    Route::post('/attendances/{attendance}/offline-scan', [AttendanceController::class, 'offlineScanQueue']);
+
+    // Sync offline scans
+    Route::post('/attendances/sync-offline-scans', [AttendanceController::class, 'syncOfflineScans']);
+
+    // Get sync statuss
+    Route::get('/attendances/sync-status', [AttendanceController::class, 'getSyncStatus']);
+
+    // Check QR code validity sebelum scan
+    Route::post('/attendances/{attendance}/check-qr', [AttendanceController::class, 'checkQrCode']);
+
+    // Get attendance scans (patrol points dengan status)
+    Route::get('/attendances/{attendance}/scans', [AttendanceController::class, 'getAttendanceScans']);
+
+    // Download progress PDF
+    Route::get('/attendances/{attendance}/progress/pdf', [AttendanceController::class, 'downloadProgressPdf']);
+
+    // Get patrol points for attendance
+    Route::get('/attendances/{attendance}/patrol-points', [AttendanceController::class, 'getPatrolPoints']);
+
     // Check-out
     Route::post('/attendances/check-out', [AttendanceController::class, 'checkOut']);
+
+    // Auto checkout (triggered by job or client request)
+    Route::post('/attendances/auto-checkout', [AttendanceController::class, 'autoCheckout']);
+
+    // Danru progress (komandan regu scanning static posts)
+    Route::get('/attendances/danru-progress', [AttendanceController::class, 'danruProgress']);
+
+    Route::get('/attendances/progressall', [AttendanceController::class, 'progressall']);
 
     // Timesheet
     Route::get('/attendances/timesheet', [AttendanceController::class, 'timesheet']);
@@ -297,7 +355,7 @@ Route::middleware('auth:sanctum')->group(function () {
 // Patrol Scan routes
 Route::middleware('auth:sanctum')->group(function () {
     // QR Code image (for printing / display)
-    Route::get('/qr-codes/{qrCode}/image', [QrCodeController::class, 'image']);
+    //Route::get('/qr-codes/{qrCode}/image', [QrCodeController::class, 'image']);
 
     // Get scan progress for attendance
     Route::get('/attendance/{attendance}/patrol-scan/progress', [PatrolScanController::class, 'getProgress']);
@@ -309,8 +367,8 @@ Route::middleware('auth:sanctum')->group(function () {
     // Post progress detail by post (existing)
     Route::get('/posts/{post}/attendance/progress-detail', [AttendanceController::class, 'progressPostDetail']);
 
-    // Post members timesheet
-    Route::get('/posts/{post}/members-timesheet', [AttendanceController::class, 'postMembersTimesheet']);
+    // Member timesheet
+    Route::get('/members-timesheet/{userid}', [AttendanceController::class, 'memberTimesheet']);
 
     // Get extended progress detail (includes ishoma, timesheet, patrol point status)
     Route::get('/attendance/{attendance}/patrol-scan/progress-detail', [PatrolScanController::class, 'getProgressDetail']);
@@ -330,6 +388,10 @@ Route::middleware('auth:sanctum')->group(function () {
     // Perform patrol scan (QR scan)
     Route::post('/patrol-scan', [PatrolScanController::class, 'performScan']);
 
+    // Offline patrol scan (unified with /patrol-scan namespace)
+    Route::post('/patrol-scan/offline', [AttendanceController::class, 'offlineScanQueueByAttendanceId']);
+    Route::post('/patrol-scan/sync-offline', [AttendanceController::class, 'syncOfflineScans']);
+
     // Get scan details
     Route::get('/patrol-scan/{scan}', [PatrolScanController::class, 'show']);
 
@@ -344,4 +406,48 @@ Route::middleware('auth:sanctum')->group(function () {
 
     // Patrol photo inline (Bearer token)
     Route::get('/patrol-scan-photo/{photoId}/inline', [PatrolScanController::class, 'inlinePhoto']);
+});
+
+// Document and Document Type routes
+Route::middleware('auth:sanctum')->group(function () {
+    // Document Type routes
+    Route::get('/projects/{project}/document-types', [DocumentTypeController::class, 'index']);
+    Route::post('/projects/{project}/document-types', [DocumentTypeController::class, 'store']);
+    Route::put('/document-types/{documentType}', [DocumentTypeController::class, 'update']);
+    Route::delete('/document-types/{documentType}', [DocumentTypeController::class, 'destroy']);
+
+    // Document routes
+    Route::get('/projects/{project}/documents', [DocumentController::class, 'index']);
+    Route::post('/projects/{project}/documents', [DocumentController::class, 'store']);
+    Route::put('/documents/{document}', [DocumentController::class, 'update']);
+    Route::delete('/documents/{document}', [DocumentController::class, 'destroy']);
+    Route::get('/documents/{document}/download', [DocumentController::class, 'download']);
+});
+
+// Daily Report routes
+Route::middleware('auth:sanctum')->group(function () {
+    // Daily Report routes
+    Route::post('/projects/{project}/daily-reports', [DailyReportController::class, 'store']);
+    Route::get('/projects/{project}/daily-reports', [DailyReportController::class, 'index']);
+    Route::get('/projects/{project}/daily-reports/{dailyReport}', [DailyReportController::class, 'show']);
+    Route::get('/projects/{project}/daily-reports/{dailyReport}/download', [DailyReportController::class, 'download']);
+    Route::delete('/projects/{project}/daily-reports/{dailyReport}',[DailyReportController::class, 'destroy']);
+
+    // Uniform Component routes
+    Route::get('/projects/{project}/uniform-components', [UniformComponentController::class, 'index']);
+    Route::delete('/projects/{project}/uniform-components/{uniformComponent}', [UniformComponentController::class, 'destroy']);
+
+    // Equipment Component routes
+    Route::get('/projects/{project}/equipment-components', [EquipmentComponentController::class, 'index']);
+    Route::delete('/projects/{project}/equipment-components/{equipmentComponent}', [EquipmentComponentController::class, 'destroy']);
+});
+
+// Berita Acara routes
+Route::middleware('auth:sanctum')->group(function () {
+    Route::get('/projects/{project}/berita-acara', [BeritaAcaraController::class, 'index']);
+    Route::post('/projects/{project}/berita-acara', [BeritaAcaraController::class, 'store']);
+    Route::get('/projects/{project}/berita-acara/{beritaAcara}', [BeritaAcaraController::class, 'show']);
+    Route::get('/projects/{project}/berita-acara/{beritaAcara}/download', [BeritaAcaraController::class, 'download']);
+    Route::delete('/projects/{project}/berita-acara/{beritaAcara}', [BeritaAcaraController::class, 'destroy']);
+    Route::get('/projects/{project}/berita-acara-number-suggestion', BeritaAcaraNumberSuggestionController::class);
 });

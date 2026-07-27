@@ -76,7 +76,7 @@ class Attendance extends Model
      */
     public function isCommanderAttendance(): bool
     {
-        return $this->user->role === 'komandan_regu';
+        return in_array($this->user->role, ['komandan_regu', 'danru'], true);
     }
 
     /**

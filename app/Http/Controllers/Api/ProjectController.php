@@ -9,6 +9,7 @@ use App\Models\Organization;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
+use Illuminate\Support\Facades\Storage;
 use App\Support\SignedMediaUrl;
 
 class ProjectController extends Controller
@@ -23,7 +24,14 @@ class ProjectController extends Controller
         $user = $request->user();
 
         $projects = Project::query()
-            ->select('id', 'organization_id', 'name', 'code', 'active')
+            ->select(
+                'id',
+                'organization_id',
+                'name',
+                'code',
+                'logo',
+                'active'
+            )
 
             // 🔒 ROLE BASED SCOPING
             ->when($user->role === 'ho', function ($q) use ($user) {
@@ -48,6 +56,19 @@ class ProjectController extends Controller
             ->orderBy('name')
             ->get();
 
+        $projects = $projects->map(function ($project) {
+            return [
+                'id' => $project->id,
+                'organization_id' => $project->organization_id,
+                'name' => $project->name,
+                'code' => $project->code,
+                'active' => $project->active,
+                'logo_url' => $project->logo
+                    ? SignedMediaUrl::projectLogo($project)
+                    : null,
+            ];
+        });
+
         return response()->json([
             'data' => $projects,
         ]);
@@ -62,7 +83,12 @@ class ProjectController extends Controller
         $this->authorize('view', $project);
 
         return response()->json([
-            'data' => $project,
+            'data' => [
+                ...$project->toArray(),
+                'logo_url' => $project->logo
+                    ? SignedMediaUrl::projectLogo($project)
+                    : null,
+            ],
         ]);
     }
 
@@ -78,6 +104,7 @@ class ProjectController extends Controller
                 'organization_id' => 'required|exists:organizations,id',
                 'name' => 'required|string|max:255',
                 'code' => 'nullable|string|max:50|unique:projects,code',
+                'logo' => 'nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
                 'location_latitude' => 'nullable|string|max:255',
                 'location_longitude' => 'nullable|string|max:255',
                 'location_address' => 'nullable|string|max:255',
@@ -94,11 +121,22 @@ class ProjectController extends Controller
             ], 422);
         }
 
+        if ($request->hasFile('logo')) {
+            $validated['logo'] = $request
+                ->file('logo')
+                ->store('project-logos', 'public');
+        }
+
         $project = Project::create($validated);
 
         return response()->json([
             'message' => 'Project created successfully',
-            'data' => $project,
+            'data' => [
+                ...$project->toArray(),
+                'logo_url' => $project->logo
+                    ? SignedMediaUrl::projectLogo($project)
+                    : null,
+            ],
         ], 201);
     }
 
@@ -118,6 +156,7 @@ class ProjectController extends Controller
                     'string',
                     Rule::unique('projects')->ignore($project->id),
                 ],
+                'logo' => 'sometimes|nullable|image|mimes:jpg,jpeg,png,webp|max:5120',
                 'location_latitude' => 'sometimes|string|max:255',
                 'location_longitude' => 'sometimes|string|max:255',
                 'location_address' => 'sometimes|string|max:255',
@@ -132,6 +171,17 @@ class ProjectController extends Controller
                 'status_code' => 422,
                 'errors'      => $e->errors(),
             ], 422);
+        }
+
+        if ($request->hasFile('logo')) {
+
+            if ($project->logo) {
+                Storage::disk('public')->delete($project->logo);
+            }
+
+            $validated['logo'] = $request
+                ->file('logo')
+                ->store('project-logos', 'public');
         }
 
         $project->update($validated);

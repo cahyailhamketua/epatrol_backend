@@ -18,10 +18,10 @@ class ScheduleSheetService
 
         /*
         |--------------------------------------------------------------------------
-        | 1️⃣ GET ALL SCHEDULES (BULK)
+        | 1️⃣ GET ALL SCHEDULES (INCLUDING team_id=NULL FOR SUMMARY CONSISTENCY)
         |--------------------------------------------------------------------------
         */
-        $schedules = Schedule::query()
+        $allSchedules = Schedule::query()
             ->select([
                 'id',
                 'project_id',
@@ -39,6 +39,13 @@ class ScheduleSheetService
             ->where('project_id', $projectId)
             ->whereBetween('date', [$startDate, $endDate])
             ->get();
+
+        /*
+        |--------------------------------------------------------------------------
+        | 1b️⃣ FILTER SCHEDULES FOR DISPLAY (team_id NOT NULL = user still active in team)
+        |--------------------------------------------------------------------------
+        */
+        $schedules = $allSchedules->filter(fn($s) => $s->team_id !== null);
 
         /*
         |--------------------------------------------------------------------------
@@ -63,21 +70,21 @@ class ScheduleSheetService
 
         /*
         |--------------------------------------------------------------------------
-        | 3️⃣ GET ABSENCES (per schedule_id, relasi ke sel sheet)
+        | 3️⃣ GET ABSENCES (for ALL schedules - including team_id=NULL)
         |--------------------------------------------------------------------------
         */
-        $scheduleIds = $schedules->pluck('id');
-        $absences = $scheduleIds->isEmpty()
+        $allScheduleIds = $allSchedules->pluck('id');
+        $absences = $allScheduleIds->isEmpty()
             ? collect()
             : Absence::query()
                 ->select(['id', 'schedule_id', 'absence_type'])
-                ->whereIn('schedule_id', $scheduleIds)
+                ->whereIn('schedule_id', $allScheduleIds)
                 ->get()
                 ->keyBy('schedule_id');
 
         /*
         |--------------------------------------------------------------------------
-        | 4️⃣ GET OVERTIME (lembur hari OFF, keyed by schedule_id)
+        | 4️⃣ GET OVERTIME (for ALL schedules - including team_id=NULL)
         |--------------------------------------------------------------------------
         */
         $overtimes = OvertimeLog::query()
@@ -97,14 +104,21 @@ class ScheduleSheetService
 
         /*
         |--------------------------------------------------------------------------
-        | 5️⃣ GROUP SCHEDULE PER USER
+        | 5️⃣ GROUP SCHEDULE PER USER (FOR DISPLAY ONLY)
         |--------------------------------------------------------------------------
         */
         $grouped = $schedules->groupBy('user_id');
+        
+        /*
+        |--------------------------------------------------------------------------
+        | 6️⃣ BUILD SOC MAP FROM ALL SCHEDULES (for accuracy)
+        |--------------------------------------------------------------------------
+        */
+        $socMap = $this->buildSocMap($allSchedules);
 
         $rows = [];
 
-        // Summary total untuk seluruh project (bulan tersebut)
+        // Summary total untuk seluruh project (bulan tersebut) - calculated from ALL schedules
         $overallSummary = [
             'SCHEDULE_COUNT' => 0, // jumlah schedule kerja (exclude off)
             'HK' => 0,
@@ -114,7 +128,67 @@ class ScheduleSheetService
             'IZIN' => 0,
             'CUTI' => 0,
             'ALPA' => 0,
+            'SOC_A' => 0,
         ];
+
+        /*
+        |--------------------------------------------------------------------------
+        | 7️⃣ CALCULATE OVERALL SUMMARY FROM ALL SCHEDULES (for consistency)
+        |--------------------------------------------------------------------------
+        */
+        $allSchedulesByUserAndDate = $allSchedules->groupBy('user_id')->map(function ($items) {
+            return $items->keyBy(fn($schedule) => $schedule->date instanceof Carbon
+                ? $schedule->date->format('Y-m-d')
+                : (string) $schedule->date);
+        });
+
+        foreach ($allSchedulesByUserAndDate as $userId => $userAllSchedulesByDate) {
+            foreach (CarbonPeriod::create($startDate, $endDate) as $date) {
+                $dateString = $date->format('Y-m-d');
+                $schedule = $userAllSchedulesByDate[$dateString] ?? null;
+
+                if (!$schedule || !$schedule->assignment) {
+                    continue;
+                }
+
+                $assignment = $schedule->assignment;
+                $isOffScheduled = $assignment->isOffDuty();
+                $key = $userId . '_' . $dateString;
+                $attendance = $attendances[$key] ?? null;
+                $absence = $absences[$schedule->id] ?? null;
+                $overtime = $overtimes[$schedule->id] ?? null;
+
+                // Count schedule kerja vs OFF
+                if ($isOffScheduled) {
+                    if (!$attendance) {
+                        $overallSummary['OFF']++;
+                    }
+                } else {
+                    $overallSummary['SCHEDULE_COUNT']++;
+                }
+
+                // Attendance status
+                if ($attendance && $attendance->attendance_status !== 'DINAS' && !$overtime) {
+                    $status = $attendance->attendance_status;
+                    if ($status === 'HADIR' || $status === 'HADIR TELAT') {
+                        $overallSummary['HK']++;
+                    }
+                }
+
+                // Absence
+                if ($absence) {
+                    $sumKey = Absence::TYPE_TO_SUMMARY_KEY[$absence->absence_type] ?? null;
+                    if ($sumKey) {
+                        $overallSummary[$sumKey]++;
+                    }
+                }
+
+                // Overtime
+                if ($overtime) {
+                    $overallSummary['OT']++;
+                }
+            }
+        }
 
         foreach ($grouped as $userId => $userSchedules) {
 
@@ -178,9 +252,11 @@ class ScheduleSheetService
                     $scheduleCount++;
                 }
 
+                $socLabel = $socMap[$schedule->id] ?? null;
+
                 $cellAssignmentDisplay = $overtime && $overtime->display_code
                     ? $overtime->display_code
-                    : $assignmentCode;
+                    : ($socLabel ?? $assignmentCode);
 
                 // Attendance (DINAS tidak dimasukkan ke agregat)
                 // Jika jadwal OFF tapi user hadir sebagai overtime (ada overtime log),
@@ -214,6 +290,7 @@ class ScheduleSheetService
                     'schedule_id' => $schedule->id,
                     'assignment' => $cellAssignmentDisplay,
                     'scheduled_assignment_code' => $assignmentCode,
+                    'soc_label' => $socLabel,
                     'attendance' => $attendance ? [
                         'id' => $attendance->id,
                         'check_in_at' => $attendance->check_in_at,
@@ -247,17 +324,12 @@ class ScheduleSheetService
                 'IZIN' => $summary['IZIN'] ?? 0,
                 'CUTI' => $summary['CUTI'] ?? 0,
                 'ALPA' => $summary['ALPA'] ?? 0,
+                'SOC_A' => $summary['SOC_A'] ?? 0,
             ];
 
-            // Akumulasi summary keseluruhan
-            $overallSummary['SCHEDULE_COUNT'] += $finalSummary['SCHEDULE_COUNT'];
-            $overallSummary['HK'] += $finalSummary['HK'];
-            $overallSummary['OT'] += $finalSummary['OT'];
-            $overallSummary['OFF'] += $finalSummary['OFF'];
-            $overallSummary['SAKIT'] += $finalSummary['SAKIT'];
-            $overallSummary['IZIN'] += $finalSummary['IZIN'];
-            $overallSummary['CUTI'] += $finalSummary['CUTI'];
-            $overallSummary['ALPA'] += $finalSummary['ALPA'];
+            // DO NOT accumulate overallSummary here - it's already calculated from allSchedules above
+            // This ensures consistency: display only shows active team schedules,
+            // but overall summary includes all schedules (even team_id=NULL)
 
             $rows[] = [
                 'user' => [
@@ -283,5 +355,80 @@ class ScheduleSheetService
             'overall_summary' => $overallSummary,
             'rows' => $rows,
         ];
+    }
+
+    private function buildSocMap($schedules): array
+    {
+        $socMap = [];
+
+        $schedulesByUserAndDate = $schedules
+            ->groupBy('user_id')
+            ->map(function ($items) {
+                return $items->keyBy(fn($schedule) => $this->toDateString($schedule->date));
+            });
+
+        foreach ($schedules->groupBy('team_id') as $teamId => $teamSchedules) {
+            if (!$teamId) {
+                continue;
+            }
+
+            $memberIds = $teamSchedules
+                ->pluck('user_id')
+                ->unique()
+                ->sort()
+                ->values();
+
+            if ($memberIds->isEmpty()) {
+                continue;
+            }
+
+            $splitIndex = (int) ceil($memberIds->count() / 2);
+            $socMMemberIds = $memberIds->slice(0, $splitIndex)->values()->all();
+            $socPMemberIds = $memberIds->slice($splitIndex)->values()->all();
+
+            $socMSet = array_fill_keys($socMMemberIds, true);
+            $socPSet = array_fill_keys($socPMemberIds, true);
+
+            foreach ($teamSchedules as $schedule) {
+                $assignmentCode = strtoupper((string) optional($schedule->assignment)->code);
+                if ($assignmentCode !== 'O') {
+                    continue;
+                }
+
+                $date = Carbon::parse($this->toDateString($schedule->date));
+                $prevDateString = $date->copy()->subDay()->format('Y-m-d');
+
+                $prevSchedule = $schedulesByUserAndDate[$schedule->user_id][$prevDateString] ?? null;
+                $prevCode = strtoupper((string) optional(optional($prevSchedule)->assignment)->code);
+                $isSecondOffInStreak = $prevCode === 'O';
+
+                $socLabel = null;
+                if ($isSecondOffInStreak) {
+                    if (isset($socPSet[$schedule->user_id])) {
+                        $socLabel = 'SOC/P';
+                    }
+                } elseif (isset($socMSet[$schedule->user_id])) {
+                    $socLabel = 'SOC/M';
+                }
+
+                // Rule: setelah shift malam, OFF berikutnya tidak boleh SOC/P.
+                if ($socLabel === 'SOC/P' && $prevCode === 'M') {
+                    $socLabel = 'SOC/M';
+                }
+
+                if ($socLabel) {
+                    $socMap[$schedule->id] = $socLabel;
+                }
+            }
+        }
+
+        return $socMap;
+    }
+
+    private function toDateString($date): string
+    {
+        return $date instanceof Carbon
+            ? $date->format('Y-m-d')
+            : Carbon::parse((string) $date)->format('Y-m-d');
     }
 }

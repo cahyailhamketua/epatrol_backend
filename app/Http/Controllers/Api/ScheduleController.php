@@ -10,10 +10,14 @@ use App\Models\User;
 use App\Models\Assignment;
 use App\Models\TeamUser;
 use App\Models\TemplateSchedule;
+use App\Services\PayrollRefreshService;
+use App\Services\ScheduleCacheService;
 use App\Services\ScheduleGeneratorService;
 use App\Services\ScheduleSheetService;
+use App\Services\TeamMembershipService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\ValidationException;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
@@ -25,6 +29,12 @@ use PhpOffice\PhpSpreadsheet\Style\Fill;
 class ScheduleController extends Controller
 {
     private const SHEET_CACHE_TTL_SECONDS = 300;
+
+    public function __construct(
+        protected ScheduleCacheService $scheduleCacheService,
+        protected TeamMembershipService $teamMembershipService,
+        protected PayrollRefreshService $payrollRefreshService,
+    ) {}
 
     /**
      * LIST ALL SCHEDULES (WITH FILTERING)
@@ -237,7 +247,7 @@ class ScheduleController extends Controller
         $validated['project_id'] = $project->id;
         $schedule = Schedule::create($validated);
         $schedule->load(['project', 'user', 'assignment']);
-        $this->bumpScheduleSheetCacheVersion($project->id);
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($project->id);
 
         return response()->json([
             'message' => 'Schedule created successfully',
@@ -337,7 +347,7 @@ class ScheduleController extends Controller
         }
 
         if (count($created) > 0) {
-            $this->bumpScheduleSheetCacheVersion($project->id);
+            $this->scheduleCacheService->bumpScheduleSheetCacheVersion($project->id);
         }
 
         return response()->json([
@@ -424,7 +434,7 @@ class ScheduleController extends Controller
 
         $schedule->update($validated);
         $schedule->load(['project', 'user', 'assignment']);
-        $this->bumpScheduleSheetCacheVersion($schedule->project_id);
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($schedule->project_id);
 
         return response()->json([
             'message' => 'Schedule updated successfully',
@@ -442,7 +452,7 @@ class ScheduleController extends Controller
 
         $projectId = $schedule->project_id;
         $schedule->delete();
-        $this->bumpScheduleSheetCacheVersion($projectId);
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($projectId);
 
         return response()->json([
             'message' => 'Schedule deleted successfully',
@@ -472,9 +482,20 @@ class ScheduleController extends Controller
             ->distinct()
             ->pluck('project_id');
 
+        $schedules = Schedule::query()
+            ->whereIn('id', $validated['ids'])
+            ->get(['project_id', 'date']);
+
         Schedule::whereIn('id', $validated['ids'])->delete();
         foreach ($projectIds as $projectId) {
-            $this->bumpScheduleSheetCacheVersion((int) $projectId);
+            $this->scheduleCacheService->bumpScheduleSheetCacheVersion((int) $projectId);
+        }
+
+        foreach ($schedules as $schedule) {
+            $this->payrollRefreshService->queueRefreshForProjectDate(
+                (int) $schedule->project_id,
+                (string) $schedule->date
+            );
         }
 
         return response()->json([
@@ -499,8 +520,8 @@ class ScheduleController extends Controller
         ]);
 
         $teamId = $request->query('team_id');
-        $cacheVersion = $this->getScheduleSheetCacheVersion($project->id);
-        $cacheKey = $this->scheduleSheetCacheKey($project->id, $month, $teamId, $cacheVersion);
+        $cacheVersion = $this->scheduleCacheService->getScheduleSheetCacheVersion($project->id);
+        $cacheKey = $this->scheduleCacheService->scheduleSheetCacheKey($project->id, $month, $teamId, $cacheVersion);
 
         $data = Cache::remember(
             $cacheKey,
@@ -590,204 +611,244 @@ class ScheduleController extends Controller
             $project->id,
             str_replace('-', '', $month)
         );
+        $filePath = storage_path('app/' . $fileName);
 
-        return response()->streamDownload(function () use ($data, $days, $project, $month) {
-            $spreadsheet = new Spreadsheet();
-            $sheet = $spreadsheet->getActiveSheet();
-            $sheet->setTitle('Schedule');
+        $spreadsheet = new Spreadsheet();
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Schedule');
 
-            // Helpers
-            $cell = function (int $col, int $row): string {
-                return Coordinate::stringFromColumnIndex($col) . $row;
+        // Helpers
+        $cell = function (int $col, int $row): string {
+            return Coordinate::stringFromColumnIndex($col) . $row;
+        };
+        $dayCode = function (string $date): string {
+            $dow = \Carbon\Carbon::parse($date)->dayOfWeek; // 0=Sun
+            return match ($dow) {
+                0 => 'MG',
+                1 => 'SN',
+                2 => 'SL',
+                3 => 'RB',
+                4 => 'KM',
+                5 => 'JM',
+                6 => 'SB',
+                default => '',
             };
-            $dayCode = function (string $date): string {
-                $dow = \Carbon\Carbon::parse($date)->dayOfWeek; // 0=Sun
-                return match ($dow) {
-                    0 => 'MG',
-                    1 => 'SN',
-                    2 => 'SL',
-                    3 => 'RB',
-                    4 => 'KM',
-                    5 => 'JM',
-                    6 => 'SB',
-                    default => '',
-                };
-            };
+        };
 
-            // Layout constants
-            $colUser = 1; // A
-            $colStatus = 2; // B
-            $firstDayCol = 3; // C
-            $dayCount = count($days);
-            $lastDayCol = $firstDayCol + max(0, $dayCount - 1);
-            $summaryCols = [
-                'SCHEDULE_COUNT',
-                'HK',
-                'OT',
-                'OFF',
-                'SAKIT',
-                'IZIN',
-                'CUTI',
-                'ALPA',
-            ];
-            $firstSummaryCol = $lastDayCol + 1;
-            $lastSummaryCol = $firstSummaryCol + count($summaryCols) - 1;
+        // Layout constants
+        $colUser = 1; // A
+        $colStatus = 2; // B
+        $firstDayCol = 3; // C
+        $dayCount = count($days);
+        $lastDayCol = $firstDayCol + max(0, $dayCount - 1);
+        $summaryCols = [
+            'SCHEDULE_COUNT',
+            'HK',
+            'OT',
+            'OFF',
+            'SAKIT',
+            'IZIN',
+            'CUTI',
+            'ALPA',
+            'SOC_A',
+        ];
+        $firstSummaryCol = $lastDayCol + 1;
+        $lastSummaryCol = $firstSummaryCol + count($summaryCols) - 1;
 
-            // Title row
-            $titleRow = 1;
-            $headerRowDay = 2;
-            $headerRowDate = 3;
-            $row = 4;
+        // Title row
+        $titleRow = 1;
+        $headerRowDay = 2;
+        $headerRowDate = 3;
+        $row = 4;
 
-            $title = sprintf(
-                '%s %s',
-                \Carbon\Carbon::parse($month . '-01')->translatedFormat('F Y'),
-                $project->name ? ('- ' . $project->name) : ''
-            );
-            $sheet->setCellValue($cell($colUser, $titleRow), $title);
-            $sheet->mergeCells($cell($colUser, $titleRow) . ':' . $cell($lastSummaryCol, $titleRow));
-            $sheet->getStyle($cell($colUser, $titleRow))->getFont()->setBold(true)->setSize(14);
-            $sheet->getStyle($cell($colUser, $titleRow))->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
+        $title = sprintf(
+            '%s %s',
+            \Carbon\Carbon::parse($month . '-01')->translatedFormat('F Y'),
+            $project->name ? ('- ' . $project->name) : ''
+        );
+        $sheet->setCellValue($cell($colUser, $titleRow), $title);
+        $sheet->mergeCells($cell($colUser, $titleRow) . ':' . $cell($lastSummaryCol, $titleRow));
+        $sheet->getStyle($cell($colUser, $titleRow))->getFont()->setBold(true)->setSize(14);
+        $sheet->getStyle($cell($colUser, $titleRow))->getAlignment()->setHorizontal(Alignment::HORIZONTAL_LEFT);
 
-            // Header left labels (merged vertically)
-            $sheet->setCellValue($cell($colUser, $headerRowDay), 'Nama');
-            $sheet->setCellValue($cell($colStatus, $headerRowDay), 'Status');
-            $sheet->mergeCells($cell($colUser, $headerRowDay) . ':' . $cell($colUser, $headerRowDate));
-            $sheet->mergeCells($cell($colStatus, $headerRowDay) . ':' . $cell($colStatus, $headerRowDate));
+        // Header left labels (merged vertically)
+        $sheet->setCellValue($cell($colUser, $headerRowDay), 'Nama');
+        $sheet->setCellValue($cell($colStatus, $headerRowDay), 'Status');
+        $sheet->mergeCells($cell($colUser, $headerRowDay) . ':' . $cell($colUser, $headerRowDate));
+        $sheet->mergeCells($cell($colStatus, $headerRowDay) . ':' . $cell($colStatus, $headerRowDate));
 
-            // Day headers (two rows)
-            foreach ($days as $i => $dayMeta) {
-                $date = $dayMeta['date'];
-                $col = $firstDayCol + $i;
-                $sheet->setCellValue($cell($col, $headerRowDay), $dayCode($date));
-                $sheet->setCellValue($cell($col, $headerRowDate), (int) \Carbon\Carbon::parse($date)->format('d'));
+        // Day headers (two rows)
+        foreach ($days as $i => $dayMeta) {
+            $date = $dayMeta['date'];
+            $col = $firstDayCol + $i;
+            $sheet->setCellValue($cell($col, $headerRowDay), $dayCode($date));
+            $sheet->setCellValue($cell($col, $headerRowDate), (int) \Carbon\Carbon::parse($date)->format('d'));
+        }
+
+        // Summary headers (merged vertically)
+        foreach ($summaryCols as $i => $key) {
+            $col = $firstSummaryCol + $i;
+            $sheet->setCellValue($cell($col, $headerRowDay), $key);
+            $sheet->mergeCells($cell($col, $headerRowDay) . ':' . $cell($col, $headerRowDate));
+        }
+
+        // Header styling
+        $headerRange = $sheet->getStyle($cell($colUser, $headerRowDay) . ':' . $cell($lastSummaryCol, $headerRowDate));
+        $headerRange->getFont()->setBold(true);
+        $headerRange->getAlignment()
+            ->setHorizontal(Alignment::HORIZONTAL_CENTER)
+            ->setVertical(Alignment::VERTICAL_CENTER);
+        $headerRange->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFEFEFEF');
+        $headerRange->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
+
+        // Column widths
+        $sheet->getColumnDimension('A')->setWidth(26);
+        $sheet->getColumnDimension('B')->setWidth(18);
+        for ($c = $firstDayCol; $c <= $lastDayCol; $c++) {
+            $sheet->getColumnDimensionByColumn($c)->setWidth(4);
+        }
+        for ($c = $firstSummaryCol; $c <= $lastSummaryCol; $c++) {
+            $sheet->getColumnDimensionByColumn($c)->setWidth(14);
+        }
+
+        // Freeze header
+        $sheet->freezePane($cell($firstDayCol, $row));
+
+        // Group rows by team
+        $rows = collect($data['rows'] ?? []);
+        $groups = $rows->groupBy(fn ($r) => ($r['user']['team_name'] ?? 'Tanpa Tim') . '|' . ($r['user']['team_id'] ?? '0'));
+
+        foreach ($groups as $teamKey => $teamRows) {
+            [$teamName] = explode('|', (string) $teamKey, 2);
+
+            // Team header row
+            $sheet->setCellValue($cell($colUser, $row), $teamName);
+            $sheet->mergeCells($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
+            $teamStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
+            $teamStyle->getFont()->setBold(true);
+            $teamStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFDDEEFF');
+            $teamStyle->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
+            $row++;
+
+            // Member rows
+            foreach ($teamRows as $r) {
+                $user = $r['user'] ?? [];
+                $summary = $r['summary'] ?? [];
+                $daysData = $r['days'] ?? [];
+
+                $sheet->setCellValue($cell($colUser, $row), $user['name'] ?? '');
+                $sheet->setCellValue($cell($colStatus, $row), $user['membership_status'] ?? '');
+
+                foreach ($days as $i => $dayMeta) {
+                    $date = $dayMeta['date'];
+                    $col = $firstDayCol + $i;
+                    $val = $daysData[$date]['assignment'] ?? '';
+                    $sheet->setCellValue($cell($col, $row), $val);
+                }
+
+                foreach ($summaryCols as $i => $key) {
+                    $col = $firstSummaryCol + $i;
+                    $sheet->setCellValue($cell($col, $row), (int) ($summary[$key] ?? 0));
+                }
+
+                // Row style
+                $sheet->getStyle($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row))
+                    ->getBorders()->getAllBorders()
+                    ->setBorderStyle(Border::BORDER_THIN)
+                    ->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFEEEEEE'));
+
+                $sheet->getStyle($cell($firstDayCol, $row) . ':' . $cell($lastSummaryCol, $row))
+                    ->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
+
+                $row++;
             }
 
-            // Summary headers (merged vertically)
-            foreach ($summaryCols as $i => $key) {
-                $col = $firstSummaryCol + $i;
-                $sheet->setCellValue($cell($col, $headerRowDay), $key);
-                $sheet->mergeCells($cell($col, $headerRowDay) . ':' . $cell($col, $headerRowDate));
-            }
+            // Spacer row
+            $row++;
+        }
 
-            // Header styling
-            $headerRange = $sheet->getStyle($cell($colUser, $headerRowDay) . ':' . $cell($lastSummaryCol, $headerRowDate));
-            $headerRange->getFont()->setBold(true);
-            $headerRange->getAlignment()
+        // Overall summary section (as in schedule sheet API)
+        $overallSummary = $data['overall_summary'] ?? [];
+        if (!empty($overallSummary)) {
+            $sheet->setCellValue($cell($colUser, $row), 'OVERALL SUMMARY');
+            $sheet->mergeCells($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
+            $summaryTitleStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
+            $summaryTitleStyle->getFont()->setBold(true);
+            $summaryTitleStyle->getAlignment()
+                ->setHorizontal(Alignment::HORIZONTAL_LEFT)
+                ->setVertical(Alignment::VERTICAL_CENTER);
+            $summaryTitleStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFE6F4EA');
+            $summaryTitleStyle->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
+            $row++;
+
+            $sheet->setCellValue($cell($colUser, $row), 'Keterangan');
+            $sheet->setCellValue($cell($colStatus, $row), 'Total');
+            $summaryHeaderStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($colStatus, $row));
+            $summaryHeaderStyle->getFont()->setBold(true);
+            $summaryHeaderStyle->getAlignment()
                 ->setHorizontal(Alignment::HORIZONTAL_CENTER)
                 ->setVertical(Alignment::VERTICAL_CENTER);
-            $headerRange->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFEFEFEF');
-            $headerRange->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
+            $summaryHeaderStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFEFEFEF');
+            $summaryHeaderStyle->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
+            $row++;
 
-            // Column widths
-            $sheet->getColumnDimension('A')->setWidth(26);
-            $sheet->getColumnDimension('B')->setWidth(18);
-            for ($c = $firstDayCol; $c <= $lastDayCol; $c++) {
-                $sheet->getColumnDimensionByColumn($c)->setWidth(4);
-            }
-            for ($c = $firstSummaryCol; $c <= $lastSummaryCol; $c++) {
-                $sheet->getColumnDimensionByColumn($c)->setWidth(14);
-            }
+            foreach ($summaryCols as $key) {
+                $sheet->setCellValue($cell($colUser, $row), $key);
+                $sheet->setCellValue($cell($colStatus, $row), (int) ($overallSummary[$key] ?? 0));
 
-            // Freeze header
-            $sheet->freezePane($cell($firstDayCol, $row));
-
-            // Group rows by team
-            $rows = collect($data['rows'] ?? []);
-            $groups = $rows->groupBy(fn ($r) => ($r['user']['team_name'] ?? 'Tanpa Tim') . '|' . ($r['user']['team_id'] ?? '0'));
-
-            foreach ($groups as $teamKey => $teamRows) {
-                [$teamName] = explode('|', (string) $teamKey, 2);
-
-                // Team header row
-                $sheet->setCellValue($cell($colUser, $row), $teamName);
-                $sheet->mergeCells($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
-                $teamStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
-                $teamStyle->getFont()->setBold(true);
-                $teamStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFDDEEFF');
-                $teamStyle->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
-                $row++;
-
-                // Member rows
-                foreach ($teamRows as $r) {
-                    $user = $r['user'] ?? [];
-                    $summary = $r['summary'] ?? [];
-                    $daysData = $r['days'] ?? [];
-
-                    $sheet->setCellValue($cell($colUser, $row), $user['name'] ?? '');
-                    $sheet->setCellValue($cell($colStatus, $row), $user['membership_status'] ?? '');
-
-                    foreach ($days as $i => $dayMeta) {
-                        $date = $dayMeta['date'];
-                        $col = $firstDayCol + $i;
-                        $val = $daysData[$date]['assignment'] ?? '';
-                        $sheet->setCellValue($cell($col, $row), $val);
-                    }
-
-                    foreach ($summaryCols as $i => $key) {
-                        $col = $firstSummaryCol + $i;
-                        $sheet->setCellValue($cell($col, $row), (int) ($summary[$key] ?? 0));
-                    }
-
-                    // Row style
-                    $sheet->getStyle($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row))
-                        ->getBorders()->getAllBorders()
-                        ->setBorderStyle(Border::BORDER_THIN)
-                        ->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFEEEEEE'));
-
-                    $sheet->getStyle($cell($firstDayCol, $row) . ':' . $cell($lastSummaryCol, $row))
-                        ->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
-
-                    $row++;
-                }
-
-                // Spacer row
+                $summaryRowStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($colStatus, $row));
+                $summaryRowStyle->getBorders()->getAllBorders()
+                    ->setBorderStyle(Border::BORDER_THIN)
+                    ->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFDDDDDD'));
+                $sheet->getStyle($cell($colStatus, $row))->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
                 $row++;
             }
+        }
 
-            // Overall summary section (as in schedule sheet API)
-            $overallSummary = $data['overall_summary'] ?? [];
-            if (!empty($overallSummary)) {
-                $sheet->setCellValue($cell($colUser, $row), 'OVERALL SUMMARY');
-                $sheet->mergeCells($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
-                $summaryTitleStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($lastSummaryCol, $row));
-                $summaryTitleStyle->getFont()->setBold(true);
-                $summaryTitleStyle->getAlignment()
-                    ->setHorizontal(Alignment::HORIZONTAL_LEFT)
-                    ->setVertical(Alignment::VERTICAL_CENTER);
-                $summaryTitleStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFE6F4EA');
-                $summaryTitleStyle->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
-                $row++;
+        $writer = new Xlsx($spreadsheet);
+        $writer->save($filePath);
 
-                $sheet->setCellValue($cell($colUser, $row), 'Keterangan');
-                $sheet->setCellValue($cell($colStatus, $row), 'Total');
-                $summaryHeaderStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($colStatus, $row));
-                $summaryHeaderStyle->getFont()->setBold(true);
-                $summaryHeaderStyle->getAlignment()
-                    ->setHorizontal(Alignment::HORIZONTAL_CENTER)
-                    ->setVertical(Alignment::VERTICAL_CENTER);
-                $summaryHeaderStyle->getFill()->setFillType(Fill::FILL_SOLID)->getStartColor()->setARGB('FFEFEFEF');
-                $summaryHeaderStyle->getBorders()->getAllBorders()->setBorderStyle(Border::BORDER_THIN)->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFCCCCCC'));
-                $row++;
+        $spreadsheet->disconnectWorksheets();
+        unset($spreadsheet);
 
-                foreach ($summaryCols as $key) {
-                    $sheet->setCellValue($cell($colUser, $row), $key);
-                    $sheet->setCellValue($cell($colStatus, $row), (int) ($overallSummary[$key] ?? 0));
+        if (!file_exists($filePath)) {
+            abort(500, 'File not found');
+        }
 
-                    $summaryRowStyle = $sheet->getStyle($cell($colUser, $row) . ':' . $cell($colStatus, $row));
-                    $summaryRowStyle->getBorders()->getAllBorders()
-                        ->setBorderStyle(Border::BORDER_THIN)
-                        ->setColor(new \PhpOffice\PhpSpreadsheet\Style\Color('FFDDDDDD'));
-                    $sheet->getStyle($cell($colStatus, $row))->getAlignment()->setHorizontal(Alignment::HORIZONTAL_CENTER);
-                    $row++;
-                }
+        // 🔥 MATIKAN SEMUA BUFFER
+        while (ob_get_level() > 0) {
+            ob_end_clean();
+        }
+
+        // 🔥 PENTING BANGET
+        ignore_user_abort(true);
+        set_time_limit(0);
+
+        $size = filesize($filePath);
+
+        return response()->streamDownload(function () use ($filePath) {
+            $chunkSize = 1024 * 1024; // 1MB
+            $handle = fopen($filePath, 'rb');
+
+            if ($handle === false) {
+                return;
             }
 
-            $writer = new Xlsx($spreadsheet);
-            $writer->save('php://output');
+            while (!feof($handle)) {
+                echo fread($handle, $chunkSize);
+                flush(); // 🔥 paksa kirim ke client
+            }
+
+            fclose($handle);
         }, $fileName, [
             'Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            'Content-Disposition' => 'attachment; filename="'.$fileName.'"',
+            'Content-Length' => $size, // 🔥 WAJIB
+            'Content-Transfer-Encoding' => 'binary',
+            'Cache-Control' => 'no-store, no-cache, must-revalidate',
+            'Pragma' => 'no-cache',
         ]);
+
     }
 
     /**
@@ -843,7 +904,7 @@ class ScheduleController extends Controller
             $team->id,
             $validated['pattern']
         );
-        $this->bumpScheduleSheetCacheVersion($project->id);
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($project->id);
 
         return response()->json([
             'message' => 'Schedule generated successfully for team.',
@@ -916,7 +977,7 @@ class ScheduleController extends Controller
                 'start_date' => $startDate,
             ]
         );
-        $this->bumpScheduleSheetCacheVersion($project->id);
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($project->id);
 
         return response()->json([
             'message' => 'Team schedule template saved successfully.',
@@ -1112,7 +1173,8 @@ class ScheduleController extends Controller
             $dayIndex++;
             $current->addDay();
         }
-        $this->bumpScheduleSheetCacheVersion($project->id);
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($project->id);
+        $this->payrollRefreshService->refreshForProjectMonth($project->id, $targetMonth);
 
         return response()->json([
             'message' => 'Schedule generated from template pattern successfully for team.',
@@ -1148,7 +1210,8 @@ class ScheduleController extends Controller
             ->whereBetween('date', [$startDate, $endDate])
             ->delete();
         if ($deleted > 0) {
-            $this->bumpScheduleSheetCacheVersion($project->id);
+            $this->scheduleCacheService->bumpScheduleSheetCacheVersion($project->id);
+            $this->payrollRefreshService->refreshForProjectMonth($project->id, $month);
         }
 
         return response()->json([
@@ -1191,7 +1254,7 @@ class ScheduleController extends Controller
         }
 
         $schedule->update($updateData);
-        $this->bumpScheduleSheetCacheVersion($schedule->project_id);
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($schedule->project_id);
 
         return response()->json([
             'message' => 'Schedule updated successfully',
@@ -1226,22 +1289,9 @@ class ScheduleController extends Controller
             ], 403);
         }
 
-        // Buat/Update membership di pivot team_user
-        TeamUser::updateOrCreate(
-            [
-                'team_id' => $team->id,
-                'user_id' => $user->id,
-            ],
-            [
-                'start_date' => $validated['start_date'] ?? now()->toDateString(),
-                'end_date' => null,
-            ]
-        );
-
-        // Copy jadwal ketua regu untuk bulan yang diminta
         $leaderId = $team->leader_id;
 
-        if (!$leaderId) {
+        if (! $leaderId) {
             return response()->json([
                 'message' => 'Team leader is not set',
             ], 422);
@@ -1249,7 +1299,7 @@ class ScheduleController extends Controller
 
         $month = $validated['month'];
         $startDate = \Carbon\Carbon::parse($month . '-01')->startOfMonth();
-        $endDate   = \Carbon\Carbon::parse($month . '-01')->endOfMonth();
+        $endDate = \Carbon\Carbon::parse($month . '-01')->endOfMonth();
 
         $nowMonthStart = now()->startOfMonth();
         if ($endDate->lt($nowMonthStart)) {
@@ -1259,72 +1309,122 @@ class ScheduleController extends Controller
                 'current_month' => now()->format('Y-m'),
             ], 422);
         }
+
         $memberStartDate = isset($validated['start_date'])
             ? \Carbon\Carbon::parse($validated['start_date'])->startOfDay()
             : now()->startOfDay();
-        $isProrateIn = $memberStartDate->greaterThan($startDate->copy()->startOfDay())
-            && $memberStartDate->lessThanOrEqualTo($endDate->copy()->endOfDay());
-        $memberStatus = $isProrateIn ? Schedule::STATUS_PRORATE_IN : Schedule::STATUS_FULL_EXISTING;
 
-        $leaderSchedules = Schedule::where('project_id', $team->project_id)
-            ->where('team_id', $team->id)
-            ->where('user_id', $leaderId)
-            ->whereBetween('date', [$startDate, $endDate])
-            ->get();
+        $deletedFormerTeams = [];
 
-        foreach ($leaderSchedules as $leaderSchedule) {
-            Schedule::updateOrCreate(
-                [
-                    'project_id' => $leaderSchedule->project_id,
-                    'user_id' => $user->id,
-                    'date' => $leaderSchedule->date,
-                ],
-                [
-                    'assignment_id' => $leaderSchedule->assignment_id,
-                    'team_id' => $team->id,
-                    'membership_status' => $memberStatus,
-                ]
+        DB::transaction(function () use ($user, $team, $validated, $leaderId, $startDate, $endDate, $memberStartDate, &$deletedFormerTeams) {
+            $deletedFormerTeams = $this->teamMembershipService->moveUserToTeam(
+                $user,
+                $team,
+                $memberStartDate,
+                $startDate
             );
-        }
-        $this->bumpScheduleSheetCacheVersion($team->project_id);
+
+            $isProrateIn = $memberStartDate->greaterThan($startDate->copy()->startOfDay())
+                && $memberStartDate->lessThanOrEqualTo($endDate->copy()->endOfDay());
+            $memberStatus = $isProrateIn ? Schedule::STATUS_PRORATE_IN : Schedule::STATUS_FULL_EXISTING;
+
+            $leaderSchedules = Schedule::where('project_id', $team->project_id)
+                ->where('team_id', $team->id)
+                ->where('user_id', $leaderId)
+                ->whereBetween('date', [$startDate, $endDate])
+                ->get();
+
+            foreach ($leaderSchedules as $leaderSchedule) {
+                Schedule::updateOrCreate(
+                    [
+                        'project_id' => $leaderSchedule->project_id,
+                        'user_id' => $user->id,
+                        'date' => $leaderSchedule->date,
+                    ],
+                    [
+                        'assignment_id' => $leaderSchedule->assignment_id,
+                        'team_id' => $team->id,
+                        'membership_status' => $memberStatus,
+                    ]
+                );
+            }
+        });
+
+        $this->scheduleCacheService->bumpScheduleSheetCacheVersion($team->project_id);
+        $this->payrollRefreshService->refreshForProjectMonth($team->project_id, $month);
+
+        $formerTeamsDeleted = count($deletedFormerTeams) > 0;
 
         return response()->json([
-            'message' => 'Team member added and schedule copied from leader.',
+            'message' => $formerTeamsDeleted
+                ? 'Team member added. Former team(s) with no members were deleted.'
+                : 'Team member added and schedule copied from leader.',
+            'deleted_former_teams' => $deletedFormerTeams,
         ]);
     }
 
-    private function scheduleSheetVersionKey(int $projectId): string
+    /**
+     * REMOVE MEMBER FROM TEAM AND DELETE MEMBER SCHEDULES FROM MONTH ONWARD
+     * DELETE /teams/{team}/members/{user}?month=2025-12
+     */
+    public function removeTeamMember(Request $request, Team $team, User $user)
     {
-        return "schedule_sheet:project:{$projectId}:version";
-    }
+        $this->authorize('manage', [Schedule::class, $team->project]);
 
-    private function getScheduleSheetCacheVersion(int $projectId): int
-    {
-        return (int) Cache::rememberForever(
-            $this->scheduleSheetVersionKey($projectId),
-            fn() => 1
-        );
-    }
+        $validated = $request->validate([
+            'month' => 'required|date_format:Y-m',
+        ]);
 
-    private function bumpScheduleSheetCacheVersion(int $projectId): void
-    {
-        $versionKey = $this->scheduleSheetVersionKey($projectId);
-        if (! Cache::has($versionKey)) {
-            Cache::forever($versionKey, 1);
+        if ($user->project_id !== $team->project_id) {
+            return response()->json([
+                'message' => 'User does not belong to this project',
+            ], 403);
         }
-        Cache::increment($versionKey);
+
+        $month = $validated['month'];
+        $monthStart = $this->teamMembershipService->monthStart($month);
+
+        $leaderReassigned = false;
+        $membershipDeleted = 0;
+        $scheduleDeleted = 0;
+        $teamDeleted = false;
+        $teamSchedulesDeleted = 0;
+        $projectId = $team->project_id;
+
+        DB::transaction(function () use ($team, $user, $monthStart, &$leaderReassigned, &$membershipDeleted, &$scheduleDeleted, &$teamDeleted, &$teamSchedulesDeleted) {
+            $leaderReassigned = $this->teamMembershipService->reassignLeaderIfRemovedMemberWasLeader($team, $user);
+
+            $membershipDeleted = TeamUser::where('team_id', $team->id)
+                ->where('user_id', $user->id)
+                ->delete();
+
+            $scheduleDeleted = $this->teamMembershipService->deleteSchedulesFromMonth(
+                $team,
+                $monthStart,
+                $user->id
+            );
+
+            $emptyTeamResult = $this->teamMembershipService->deleteTeamIfNoMembersRemain($team, $monthStart);
+            $teamDeleted = $emptyTeamResult['deleted'];
+            $teamSchedulesDeleted = $emptyTeamResult['deleted_schedule_count'];
+        });
+
+        if ($scheduleDeleted > 0 || $teamSchedulesDeleted > 0 || $leaderReassigned || $teamDeleted || $membershipDeleted > 0) {
+            $this->scheduleCacheService->bumpScheduleSheetCacheVersion($projectId);
+        }
+
+        $this->payrollRefreshService->refreshForProjectMonth($projectId, $month);
+
+        return response()->json([
+            'message' => $teamDeleted
+                ? 'Team member removed. Team was deleted because it has no members.'
+                : 'Team member removed and schedules deleted successfully.',
+            'deleted_membership_count' => $membershipDeleted,
+            'deleted_schedule_count' => $scheduleDeleted,
+            'leader_reassigned' => $leaderReassigned,
+            'team_deleted' => $teamDeleted,
+            'team_deleted_schedule_count' => $teamSchedulesDeleted,
+        ]);
     }
 
-    private function scheduleSheetCacheKey(int $projectId, string $month, ?string $teamId, int $version): string
-    {
-        $team = $teamId ?: 'all';
-
-        return sprintf(
-            'schedule_sheet:project:%d:month:%s:team:%s:v:%d',
-            $projectId,
-            $month,
-            $team,
-            $version
-        );
-    }
 }

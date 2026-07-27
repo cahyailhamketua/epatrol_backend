@@ -1,0 +1,214 @@
+{
+  "info": {
+    "name": "Attendance Progress Endpoints with attendance_id",
+    "description": "Collection untuk testing progress endpoints dengan parameter attendance_id untuk filtering danru/assignment",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Progress Team by Post (with attendance_id)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer YOUR_TOKEN_HERE",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/attendance/progress?project_id=1&attendance_id=15&current_time=2026-05-11 13:00:00",
+          "protocol": "http",
+          "host": ["api", "backend"],
+          "path": ["attendance", "progress"],
+          "query": [
+            {
+              "key": "project_id",
+              "value": "1",
+              "description": "Required for HO role, optional for others"
+            },
+            {
+              "key": "attendance_id",
+              "value": "15",
+              "description": "Optional: Filter untuk danru tertentu (komandan_regu)"
+            },
+            {
+              "key": "current_time",
+              "value": "2026-05-11 13:00:00",
+              "description": "Optional: Format Y-m-d H:i:s (timezone project)"
+            }
+          ]
+        },
+        "description": "Get progress team by post, dengan opsional attendance_id untuk filter danru tertentu"
+      },
+      "response": []
+    },
+    {
+      "name": "Progress Team - All Danru",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer YOUR_TOKEN_HERE",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/attendance/progress?project_id=1&current_time=2026-05-11 13:00:00",
+          "protocol": "http",
+          "host": ["api", "backend"],
+          "path": ["attendance", "progress"],
+          "query": [
+            {
+              "key": "project_id",
+              "value": "1"
+            },
+            {
+              "key": "current_time",
+              "value": "2026-05-11 13:00:00"
+            }
+          ]
+        },
+        "description": "Get progress team - tanpa attendance_id akan menampilkan semua danru yang aktif"
+      },
+      "response": []
+    },
+    {
+      "name": "Progress Post Detail (GET /posts/{post}/attendance/progress-detail)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer YOUR_TOKEN_HERE",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/posts/1/attendance/progress-detail?project_id=1&current_time=2026-05-11 13:00:00",
+          "protocol": "http",
+          "host": ["api", "backend"],
+          "path": ["posts", "1", "attendance", "progress-detail"],
+          "query": [
+            {
+              "key": "project_id",
+              "value": "1",
+              "description": "Required for HO role"
+            },
+            {
+              "key": "current_time",
+              "value": "2026-05-11 13:00:00",
+              "description": "Optional: Format Y-m-d H:i:s"
+            }
+          ]
+        },
+        "description": "Get progress detail untuk post tertentu. Assignment akan auto-detect dari attendance yang aktif"
+      },
+      "response": []
+    },
+    {
+      "name": "Download Progress PDF (with attendance_id check)",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer YOUR_TOKEN_HERE",
+            "type": "text"
+          }
+        ],
+        "url": {
+          "raw": "{{BASE_URL}}/api/attendance/15/download-progress",
+          "protocol": "http",
+          "host": ["api", "backend"],
+          "path": ["attendance", "15", "download-progress"]
+        },
+        "description": "Download progress PDF untuk attendance ID 15. Akan check apakah sudah melewati end_time assignment"
+      },
+      "response": []
+    },
+    {
+      "name": "Check QR with Radius Validation",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer YOUR_TOKEN_HERE",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"attendance_id\": 15,\n  \"qr_code\": \"QR001\",\n  \"scan_latitude\": -6.123456,\n  \"scan_longitude\": 106.789012,\n  \"scan_altitude\": 50\n}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan/check-qr",
+          "protocol": "http",
+          "host": ["api", "backend"],
+          "path": ["patrol-scan", "check-qr"]
+        },
+        "description": "Check QR code dengan validasi radius. attendance_id wajib dikirim untuk identify user"
+      },
+      "response": []
+    },
+    {
+      "name": "Perform Patrol Scan with Latitude/Longitude",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer YOUR_TOKEN_HERE",
+            "type": "text"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json",
+            "type": "text"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"attendance_id\": 15,\n  \"qr_code\": \"QR001\",\n  \"scan_latitude\": -6.123456,\n  \"scan_longitude\": 106.789012,\n  \"scan_altitude\": 50,\n  \"note\": \"Scan dari checkpoint 1\",\n  \"current_time\": \"2026-05-11 13:15:00\"\n}"
+        },
+        "url": {
+          "raw": "{{BASE_URL}}/api/patrol-scan",
+          "protocol": "http",
+          "host": ["api", "backend"],
+          "path": ["patrol-scan"]
+        },
+        "description": "Perform patrol scan dengan validasi:\n- attendance_id: untuk identify user\n- latitude/longitude: untuk radius validation\n- Jika melampaui radius, return error dengan distance info"
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "BASE_URL",
+      "value": "http://localhost:8000",
+      "type": "string"
+    }
+  ]
+}

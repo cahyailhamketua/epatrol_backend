@@ -44,21 +44,12 @@ class AttendanceService
         }
 
         $validSchedules = [];
-        $offDutySchedule = null;
 
         foreach ($schedules as $sch) {
             if (!$sch->project || !$sch->assignment) continue;
 
             $projectTz = $sch->project->timezone ?? $sch->project->organization->timezone ?? 'Asia/Jakarta';
             $nowTz = Carbon::createFromFormat('Y-m-d H:i:s', $currentTimeStr, $projectTz)->setTimezone('UTC');
-
-            if ($sch->assignment->isOffDuty()) {
-                $schDate = $sch->date instanceof Carbon ? $sch->date->format('Y-m-d') : Carbon::parse($sch->date)->format('Y-m-d');
-                if ($schDate === $todayStr) {
-                    $offDutySchedule = $sch;
-                }
-                continue;
-            }
 
             $schDate = $sch->date instanceof Carbon ? $sch->date->format('Y-m-d') : Carbon::parse($sch->date)->format('Y-m-d');
             $start = Carbon::createFromFormat('Y-m-d H:i:s', $schDate . ' ' . $sch->assignment->start_time, $projectTz)->setTimezone('UTC');
@@ -68,7 +59,8 @@ class AttendanceService
                 $end->addDay();
             }
 
-            // Reasonable check-in window: 4 hours before till 18 hours after start.
+            // Support overnight shifts for both regular and off-duty assignments.
+            // Accept if current time is within 4 hours before start until 18 hours after start.
             if ($nowTz->greaterThanOrEqualTo($start->copy()->subHours(4)) && $nowTz->lessThan($start->copy()->addHours(18))) {
                 $validSchedules[] = ['schedule' => $sch, 'start' => $start];
             }
@@ -79,11 +71,6 @@ class AttendanceService
             $best = $validSchedules[0]['schedule'];
             $bestDate = $best->date instanceof Carbon ? $best->date->format('Y-m-d') : Carbon::parse($best->date)->format('Y-m-d');
             return [$best, $bestDate];
-        }
-
-        if ($offDutySchedule) {
-            $offDate = $offDutySchedule->date instanceof Carbon ? $offDutySchedule->date->format('Y-m-d') : Carbon::parse($offDutySchedule->date)->format('Y-m-d');
-            return [$offDutySchedule, $offDate];
         }
 
         $todaySch = $schedules->first(fn($s) => ( $s->date instanceof Carbon ? $s->date->format('Y-m-d') : Carbon::parse($s->date)->format('Y-m-d') ) === $todayStr);
@@ -253,7 +240,7 @@ class AttendanceService
             $gracePeriod = $assignment->grace_period ?? 15;
             $earliest = $startTime->copy()->subMinutes(self::CHECK_IN_EARLY_MINUTES);
             $graceDeadline = $startTime->copy()->addMinutes($gracePeriod);
-            $checkInDeadline = $endTime->copy()->subHour();
+            $checkInDeadline = $endTime->copy()->addMinutes(60);//120->subHour() ini itu untuk deadline check in minimal 1 jam sebelum pulang
 
             if ($nowUtc->isBefore($earliest)) {
                 return ['success' => false, 'valid' => false, 'message' => 'Belum waktunya absen masuk.', 'status_code' => 403];

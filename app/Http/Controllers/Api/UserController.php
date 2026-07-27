@@ -50,11 +50,17 @@ public function index(Request $request)
             'project_id',
             'organization_id',
             'active',
-            'avatar' // penting untuk generate avatar_url
+            'avatar', // penting untuk generate avatar_url
+            'ktp_photo'
         )
         ->when($auth->role === 'admin_project', function ($q) use ($auth) {
             // 🔐 admin project hanya lihat user di project-nya
             $q->where('project_id', $auth->project_id);
+        })
+        ->when($auth->role === 'ho', function ($q) use ($auth) {
+            $q->where('organization_id', $auth->organization_id)
+              ->where('role', '!=', 'ho')
+              ->where('id', '!=', $auth->id);
         })
         ->when(in_array($auth->role, ['anggota', 'komandan_regu']), function ($q) {
             // ❌ role ini tidak boleh list user
@@ -83,6 +89,7 @@ public function index(Request $request)
                 'avatar_url' => $user->avatar
                     ? SignedMediaUrl::userAvatar($user)
                     : null,
+                'ktp_photo_url' => $user->ktp_photo ? SignedMediaUrl::userKtpPhoto($user) : null,
             ];
         });
 
@@ -116,7 +123,7 @@ public function index(Request $request)
                 'email' => 'nullable|email|unique:users,email',
                 'phone' => 'nullable|string',
                 'role' => 'required|string',
-                'password' => 'required|min:6',
+                'password' => 'sometimes|nullable|min:6',
             ]);
         } catch (ValidationException $e) {
             return response()->json([
@@ -127,7 +134,26 @@ public function index(Request $request)
             ], 422);
         }
 
-        $validated['password'] = bcrypt($validated['password']);
+        // Generate password automatically based on role if available.
+        $role = $validated['role'] ?? $request->input('role');
+
+        $rolePasswordMap = [
+            'anggota' => 'anggota123',
+            'komandan_regu' => 'danru123',
+            'admin' => 'admin123',
+            'admin_project' => 'admin123',
+            'ho' => 'headoffice123',
+        ];
+
+        if (isset($rolePasswordMap[$role])) {
+            $plainPassword = $rolePasswordMap[$role];
+        } elseif (!empty($validated['password'])) {
+            $plainPassword = $validated['password'];
+        } else {
+            $plainPassword = 'password123';
+        }
+
+        $validated['password'] = bcrypt($plainPassword);
 
         $user = User::create($validated);
 
@@ -145,7 +171,15 @@ public function index(Request $request)
         $this->authorize('view', $user);
 
         return response()->json([
-            'data' => $user,
+            'data' => array_merge(
+                $user->toArray(),
+                [
+                    'avatar_url' => $user->avatar ? SignedMediaUrl::userAvatar($user) : null,
+                    'avatar_storage_url_legacy' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
+                    'ktp_photo_url' => $user->ktp_photo ? SignedMediaUrl::userKtpPhoto($user) : null,
+                    'ktp_photo_storage_url_legacy' => $user->ktp_photo ? Storage::disk('public')->url($user->ktp_photo) : null,
+                ]
+            ),
         ]);
     }
 
@@ -166,6 +200,7 @@ public function index(Request $request)
             ],
             'phone' => 'sometimes|nullable|string|max:20',
             'avatar' => 'sometimes|nullable|image|max:2048',
+            'ktp_photo' => 'sometimes|nullable|image|max:4096',
             'nik' => 'sometimes|nullable|string|max:20',
             'npwp' => 'sometimes|nullable|string|max:20',
             'bpjs_kesehatan' => 'sometimes|nullable|string|max:20',
@@ -196,20 +231,41 @@ public function index(Request $request)
             unset($validated['avatar']);
         }
 
+        // Handle ktp_photo upload (store original)
+        if ($request->hasFile('ktp_photo')) {
+            // Delete old ktp file if exists
+            if ($user->ktp_photo && Storage::disk('public')->exists($user->ktp_photo)) {
+                Storage::disk('public')->delete($user->ktp_photo);
+            }
+
+            $validated['ktp_photo'] = Storage::disk('public')->putFile('ktp_photos', $request->file('ktp_photo'));
+        } else {
+            unset($validated['ktp_photo']);
+        }
+
         $validated = array_filter(
             $validated,
             fn ($value) => ! is_null($value) && $value !== ''
         );
 
         $user->update($validated);
+        
+        \Log::info('USER UPDATED CONTROLLER', [
+            'id' => $user->id,
+            'changes' => $user->getChanges(),
+        ]);
+
+        $freshUser = $user->fresh();
 
         return response()->json([
             'message' => 'User updated successfully',
             'data' => array_merge(
-                $user->fresh()->toArray(),
+                $freshUser->toArray(),
                 [
-                    'avatar_url' => $user->avatar ? SignedMediaUrl::userAvatar($user) : null,
-                    'avatar_storage_url_legacy' => $user->avatar ? Storage::disk('public')->url($user->avatar) : null,
+                    'avatar_url' => $freshUser->avatar ? SignedMediaUrl::userAvatar($freshUser) : null,
+                    'avatar_storage_url_legacy' => $freshUser->avatar ? Storage::disk('public')->url($freshUser->avatar) : null,
+                    'ktp_photo_url' => $freshUser->ktp_photo ? SignedMediaUrl::userKtpPhoto($freshUser) : null,
+                    'ktp_photo_storage_url_legacy' => $freshUser->ktp_photo ? Storage::disk('public')->url($freshUser->ktp_photo) : null,
                 ]
             ),
         ]);
@@ -268,6 +324,45 @@ public function index(Request $request)
 
         return response()->json([
             'message' => 'User has been activated',
+        ]);
+    }
+
+    /**
+     * Reset user's password back to default based on role.
+     * Only callable by users with role `dev`.
+     */
+    public function resetPassword(Request $request, User $user)
+    {
+        $authUser = $request->user();
+
+        if ($authUser->role !== 'dev') {
+            return response()->json([
+                'message' => 'Unauthorized. Only developer can reset passwords.',
+            ], 403);
+        }
+
+        $role = $user->role;
+
+        $rolePasswordMap = [
+            'anggota' => 'anggota123',
+            'komandan_regu' => 'danru123',
+            'admin' => 'admin123',
+            'admin_project' => 'admin123',
+            'ho' => 'headoffice123',
+        ];
+
+        if (isset($rolePasswordMap[$role])) {
+            $plainPassword = $rolePasswordMap[$role];
+        } else {
+            $plainPassword = 'password123';
+        }
+
+        $user->password = bcrypt($plainPassword);
+        $user->save();
+
+        return response()->json([
+            'message' => 'Password has been reset to default for this user',
+            'new_password' => $plainPassword,
         ]);
     }
 }
